@@ -35,6 +35,14 @@ def build_uniprot_to_af2_path(af2_dir):
     return uniprot_to_path
 
 
+def build_case_insensitive_file_index(directory, pattern="*.pdb"):
+    index = {}
+    for path in glob.glob(os.path.join(directory, pattern)):
+        stem = os.path.splitext(os.path.basename(path))[0]
+        index[stem.lower()] = path
+    return index
+
+
 def main():
     args = args_parser()
     os.makedirs(args.out_dir, exist_ok=True)
@@ -42,24 +50,34 @@ def main():
 
     pdb_to_uniprot = load_pdb_to_uniprot_mapping(args.mapping_file)
     uniprot_to_af2_path = build_uniprot_to_af2_path(args.af2_dir)
+    af2_casefold = {k.lower(): v for k, v in uniprot_to_af2_path.items()}
+    holo_casefold = build_case_insensitive_file_index(args.holo_dir)
 
     built = 0
     for pdb_id, uniprot_id in sorted(pdb_to_uniprot.items()):
         af2 = uniprot_to_af2_path.get(uniprot_id)
         if not af2:
+            af2 = af2_casefold.get(uniprot_id.lower())
+        if not af2:
+            print(f"[debug] Skip {pdb_id}: AF2 structure not found for UniProt '{uniprot_id}'")
             continue
 
         holo = os.path.join(args.holo_dir, f"{pdb_id}.pdb")
         if not os.path.exists(holo):
+            holo = holo_casefold.get(pdb_id.lower())
+        if not holo or not os.path.exists(holo):
+            print(f"[debug] Skip {pdb_id}: holo structure not found (case-insensitive lookup tried)")
             continue
 
         a = parser.parse_ca_structure(af2)
         h = parser.parse_ca_structure(holo)
         if not a or not h:
+            print(f"[debug] Skip {pdb_id}: parse failed (af2_ok={bool(a)}, holo_ok={bool(h)})")
             continue
         try:
             delta_r, ids, af2_aligned = compute_displacement_target(a["coords"], h["coords"], a["residue_ids"], h["residue_ids"])
         except ValueError:
+            print(f"[debug] Skip {pdb_id}: compute_displacement_target raised ValueError")
             continue
 
         out = {
@@ -73,6 +91,7 @@ def main():
         }
         torch.save(out, os.path.join(args.out_dir, f"{pdb_id}.pt"))
         built += 1
+        print(f"[debug] Built sample {pdb_id}: af2='{os.path.basename(af2)}', holo='{os.path.basename(holo)}', residues={len(ids)}")
 
     print(f"Built {built} paired samples in {args.out_dir}")
 
