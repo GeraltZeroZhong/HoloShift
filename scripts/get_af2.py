@@ -34,14 +34,15 @@ def get_uniprot_ids(pdb_id):
         safe_print(f"[-] 映射 PDB ID {pdb_id} 失败: {e}")
     return []
 
-def download_af2(uniprot_id, output_dir):
-    """下载 AlphaFold 结构，返回 True/False"""
-    url = f"https://alphafold.ebi.ac.uk/files/AF-{uniprot_id}-F1-model_v6.pdb"
-    filename = os.path.join(output_dir, f"AF-{uniprot_id}.pdb")
+def download_pae(uniprot_id, output_dir):
+    """下载 AlphaFold PAE (.json) 数据 (v6)，返回 True/False"""
+    url = f"https://alphafold.ebi.ac.uk/files/AF-{uniprot_id}-F1-predicted_aligned_error_v6.json"
+    
+    # 保存文件名保持与 download_af2 一致的命名风格，方便管理
+    filename = os.path.join(output_dir, f"AF-{uniprot_id}.json")
 
-    # 如果文件已存在，也视为成功，直接返回 True
     if os.path.exists(filename):
-        safe_print(f"[*] {uniprot_id} 已存在，跳过。")
+        safe_print(f"[*] PAE {uniprot_id} 已存在，跳过。")
         return True
 
     try:
@@ -49,15 +50,42 @@ def download_af2(uniprot_id, output_dir):
         if response.status_code == 200:
             with open(filename, 'wb') as f:
                 f.write(response.content)
-            safe_print(f"[+] 下载成功: {filename}")
+            safe_print(f"[+] PAE 下载成功 (v6): {filename}")
+            return True
+        elif response.status_code == 404:
+            safe_print(f"[-] PAE 未找到 {uniprot_id} (v6): HTTP 404")
+            return False
+        else:
+            safe_print(f"[-] PAE 下载错误 {uniprot_id}: HTTP {response.status_code}")
+            return False
+    except Exception as e:
+        safe_print(f"[-] PAE 下载异常 {uniprot_id}: {e}")
+        return False
+
+def download_af2(uniprot_id, output_dir):
+    """下载 AlphaFold 结构 (v6)，返回 True/False"""
+    url = f"https://alphafold.ebi.ac.uk/files/AF-{uniprot_id}-F1-model_v6.pdb"
+    filename = os.path.join(output_dir, f"AF-{uniprot_id}.pdb")
+
+    # 如果文件已存在，也视为成功，直接返回 True
+    if os.path.exists(filename):
+        safe_print(f"[*] {uniprot_id} (PDB) 已存在，跳过。")
+        return True
+
+    try:
+        response = requests.get(url, timeout=30)
+        if response.status_code == 200:
+            with open(filename, 'wb') as f:
+                f.write(response.content)
+            safe_print(f"[+] PDB 下载成功: {filename}")
             return True
         elif response.status_code == 404:
             return False
         else:
-            safe_print(f"[-] 下载错误 {uniprot_id}: HTTP {response.status_code}")
+            safe_print(f"[-] PDB 下载错误 {uniprot_id}: HTTP {response.status_code}")
             return False
     except Exception as e:
-        safe_print(f"[-] 下载异常 {uniprot_id}: {e}")
+        safe_print(f"[-] PDB 下载异常 {uniprot_id}: {e}")
         return False
 
 def process_single_pdb(pdb_file):
@@ -75,7 +103,11 @@ def process_single_pdb(pdb_file):
     # 2. 遍历尝试下载
     success = False
     for uid in uniprot_ids:
+        # 首先下载 PDB 结构
         if download_af2(uid, SAVE_DIR):
+            # 如果 PDB 下载成功，紧接着下载对应的 PAE 文件
+            download_pae(uid, SAVE_DIR)
+
             # 成功后记录映射关系
             with mapping_lock:
                 mapping_dict[pdb_id] = uid
