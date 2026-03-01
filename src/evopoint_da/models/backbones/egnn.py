@@ -8,15 +8,20 @@ class EGNNLayer(nn.Module):
         self.edge_mlp = nn.Sequential(
             nn.Linear(feat_dim * 2 + edge_dim + 1, hidden_dim),
             nn.SiLU(),
+            nn.LayerNorm(hidden_dim),
             nn.Linear(hidden_dim, hidden_dim),
             nn.SiLU(),
+            nn.LayerNorm(hidden_dim),
         )
         self.node_mlp = nn.Sequential(
             nn.Linear(feat_dim + hidden_dim, hidden_dim),
             nn.SiLU(),
+            nn.LayerNorm(hidden_dim),
             nn.Linear(hidden_dim, feat_dim),
         )
         self.coord_mlp = nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.SiLU(), nn.Linear(hidden_dim, 1))
+        nn.init.zeros_(self.coord_mlp[-1].weight)
+        nn.init.zeros_(self.coord_mlp[-1].bias)
 
     def forward(self, x, pos, edge_index, edge_attr):
         src, dst = edge_index
