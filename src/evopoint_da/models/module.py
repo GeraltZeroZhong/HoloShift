@@ -56,7 +56,27 @@ class EvoPointLitModule(pl.LightningModule):
         self._shared_step(batch, "val")
 
     def test_step(self, batch, batch_idx):
-        self._shared_step(batch, "test")
+
+        delta_pred = self.forward(batch)
+        loss_mse = F.mse_loss(delta_pred, batch.y)
+        pos_pred = batch.pos + delta_pred
+        loss_clash = self._clash_penalty(pos_pred, batch.edge_index)
+        
+        loss = loss_mse + self.hparams.lambda_clash * loss_clash
+
+
+        self.log("test/loss", loss)
+        self.log("test/loss_mse", loss_mse)
+        self.log("test/loss_clash", loss_clash)
+
+        zero_pred = torch.zeros_like(batch.y)
+        baseline_mse = F.mse_loss(zero_pred, batch.y)
+        
+        self.log("test/baseline_mse", baseline_mse)
+        self.log("test/pred_magnitude", torch.norm(delta_pred, dim=-1).mean())
+        
+        return loss
+        
 
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
