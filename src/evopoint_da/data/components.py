@@ -88,12 +88,15 @@ def compute_displacement_target(
 ) -> Tuple[np.ndarray, List[str], np.ndarray, np.ndarray, np.ndarray]:
     aligner = Align.PairwiseAligner()
     aligner.mode = "local"
+    aligner.match_score = 2
+    aligner.mismatch_score = -1
+    aligner.open_gap_score = -10
+    aligner.extend_gap_score = -0.5
 
-    alignments = aligner.align(sequence_af2, sequence_holo)
-    if not alignments:
+    try:
+        best_alignment = next(iter(aligner.align(sequence_af2, sequence_holo)))
+    except StopIteration:
         raise ValueError("No sequence alignment between AF2 and holo structures.")
-
-    best_alignment = alignments[0]
     af2_blocks, holo_blocks = best_alignment.aligned
     if len(af2_blocks) == 0:
         raise ValueError("No aligned residues found between AF2 and holo structures.")
