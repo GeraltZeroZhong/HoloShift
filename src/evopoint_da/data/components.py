@@ -1,9 +1,9 @@
 import json
 import os
 import pickle
-import subprocess
 from typing import Dict, List, Optional, Tuple
 
+import freesasa
 import numpy as np
 import torch
 from Bio.PDB import MMCIFParser, PDBParser
@@ -187,12 +187,17 @@ class PCAReducer:
 
 
 def compute_sasa_with_freesasa(structure_path: str) -> Dict[str, float]:
-    cmd = ["freesasa", "--format=json", structure_path]
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
-    data = json.loads(proc.stdout)
+    print(f"[DEBUG] Starting FreeSASA calculation for: {structure_path}")
+    structure = freesasa.Structure(structure_path)
+    print("[DEBUG] Structure loaded, running SASA calculation via Python API...")
+    result = freesasa.calc(structure)
+    residue_areas = result.residueAreas()
+
     per_res = {}
-    for chain_id, residues in data.get("residueAreas", {}).items():
-        for res_id, vals in residues.items():
+    for chain_id, residues in residue_areas.items():
+        for res_id, residue_area in residues.items():
             key = f"{chain_id}_{int(res_id)}"
-            per_res[key] = float(vals.get("total", 0.0))
+            per_res[key] = float(residue_area.total)
+
+    print(f"[DEBUG] FreeSASA finished, parsed {len(per_res)} residue SASA entries.")
     return per_res
