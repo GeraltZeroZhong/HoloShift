@@ -34,7 +34,7 @@ class StructureParser:
         except Exception:
             return None
 
-        coords, plddts, residue_ids, seq_chars = [], [], [], []
+        coords, plddts, residue_ids, residue_names, seq_chars = [], [], [], [], []
         query_chain_id = chain_id.upper() if chain_id else None
         for chain in model:
             if query_chain_id and chain.id.upper() != query_chain_id:
@@ -47,6 +47,7 @@ class StructureParser:
                 coords.append(ca.get_coord())
                 plddts.append(float(ca.get_bfactor()))
                 residue_ids.append(f"{chain.id}_{res.id[1]}")
+                residue_names.append(resname)
                 try:
                     seq_chars.append(seq1(resname))
                 except Exception:
@@ -59,6 +60,7 @@ class StructureParser:
             "coords": np.asarray(coords, dtype=np.float32),
             "plddts": np.asarray(plddts, dtype=np.float32),
             "residue_ids": residue_ids,
+            "residue_names": residue_names,
             "sequence": "".join(seq_chars),
         }
 

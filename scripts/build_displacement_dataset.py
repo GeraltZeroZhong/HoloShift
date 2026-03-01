@@ -2,6 +2,8 @@ import argparse
 import glob
 import json
 import os
+
+import numpy as np
 import torch
 
 from evopoint_da.data.components import StructureParser, compute_displacement_target
@@ -34,6 +36,46 @@ def build_uniprot_to_af2_path(af2_dir):
         uniprot_to_path[uniprot_id] = af2_path
     return uniprot_to_path
 
+
+
+
+def analyze_residue_name_matches(af2_struct, holo_struct, residue_ids):
+    af2_name_map = {rid.upper(): name for rid, name in zip(af2_struct["residue_ids"], af2_struct.get("residue_names", []))}
+    holo_name_map = {rid.upper(): name for rid, name in zip(holo_struct["residue_ids"], holo_struct.get("residue_names", []))}
+
+    mismatches = []
+    match_count = 0
+    for rid in residue_ids:
+        key = rid.upper()
+        af2_name = af2_name_map.get(key, "UNK")
+        holo_name = holo_name_map.get(key, "UNK")
+        if af2_name == holo_name:
+            match_count += 1
+        else:
+            mismatches.append((rid, af2_name, holo_name))
+
+    total = len(residue_ids)
+    mismatch_count = len(mismatches)
+    mismatch_ratio = (mismatch_count / total) if total else 0.0
+
+    preview_count = min(10, total)
+    print(f"[debug] Residue-name check preview (first {preview_count}/{total} matched residue IDs):")
+    for rid in residue_ids[:preview_count]:
+        key = rid.upper()
+        print(f"[debug]   {rid}: AF2={af2_name_map.get(key, 'UNK')}, PDB={holo_name_map.get(key, 'UNK')}")
+
+    print(f"[debug] Residue-name consistency: matches={match_count}, mismatches={mismatch_count}, mismatch_ratio={mismatch_ratio:.2%}")
+    if mismatches:
+        print("[debug] Residue-name mismatch examples:")
+        for rid, af2_name, holo_name in mismatches[:10]:
+            print(f"[debug]   {rid}: AF2={af2_name}, PDB={holo_name}")
+
+    if mismatch_ratio >= 0.30:
+        print("[warning] High amino-acid mismatch ratio detected between AF2 and PDB residue IDs. This usually indicates residue numbering misalignment. Consider renumbering the PDB file to UniProt residue IDs before building the dataset.")
+
+
+def compute_rmsd(delta_r):
+    return float(np.sqrt(np.mean(np.sum(np.square(delta_r), axis=1))))
 
 def build_case_insensitive_file_index(directory, pattern="*.pdb"):
     index = {}
@@ -80,6 +122,9 @@ def main():
             print(f"[debug] Skip {pdb_id}: compute_displacement_target raised ValueError")
             continue
 
+        analyze_residue_name_matches(a, h, ids)
+        rmsd = compute_rmsd(delta_r)
+
         out = {
             "pair_id": pdb_id,
             "residue_ids": ids,
@@ -91,7 +136,7 @@ def main():
         }
         torch.save(out, os.path.join(args.out_dir, f"{pdb_id}.pt"))
         built += 1
-        print(f"[debug] Built sample {pdb_id}: af2='{os.path.basename(af2)}', holo='{os.path.basename(holo)}', residues={len(ids)}")
+        print(f"[debug] Built sample {pdb_id}: af2='{os.path.basename(af2)}', holo='{os.path.basename(holo)}', residues={len(ids)}, rmsd={rmsd:.4f} Å")
 
     print(f"Built {built} paired samples in {args.out_dir}")
 
