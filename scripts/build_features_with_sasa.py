@@ -5,6 +5,10 @@ import os
 import torch
 from tqdm import tqdm
 
+
+PLDDT_SCALE_MAX = 100.0
+SASA_SCALE_MAX = 250.0
+
 from evopoint_da.data.components import (
     ESMFeatureExtractor,
     PCAReducer,
@@ -86,8 +90,11 @@ def main():
             continue
 
         sasa_map = compute_sasa_with_freesasa(af2_file)
-        sasa = torch.tensor([sasa_map.get(rid, 0.0) for rid in d["residue_ids"]], dtype=torch.float32).unsqueeze(1)
-        plddt = d["plddt"].float()
+        sasa_raw = torch.tensor([sasa_map.get(rid, 0.0) for rid in d["residue_ids"]], dtype=torch.float32).unsqueeze(1)
+        sasa = (sasa_raw / SASA_SCALE_MAX).clamp(0.0, 1.0)
+
+        plddt_raw = d["plddt"].float()
+        plddt = (plddt_raw / PLDDT_SCALE_MAX).clamp(0.0, 1.0)
         x = torch.cat([x_esm, plddt, sasa], dim=1)
 
         pae_path_npy = os.path.join(args.pae_dir, f"{stem}.npy")
