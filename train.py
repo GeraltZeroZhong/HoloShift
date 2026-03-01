@@ -1,5 +1,6 @@
 import os
 import sys
+from datetime import datetime
 
 import hydra
 import pytorch_lightning as pl
@@ -21,7 +22,8 @@ def main(cfg: DictConfig):
     datamodule = hydra.utils.instantiate(cfg.data)
     model = hydra.utils.instantiate(cfg.model)
 
-    ckpt_dir = os.path.join(root, "checkpoints")
+    run_time = datetime.now().strftime("%Y%m%d-%H%M%S")
+    ckpt_dir = os.path.join(root, "checkpoints", run_time)
     os.makedirs(ckpt_dir, exist_ok=True)
 
     callbacks = [

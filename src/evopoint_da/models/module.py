@@ -40,9 +40,13 @@ class EvoPointLitModule(pl.LightningModule):
         loss_clash = self._clash_penalty(pos_pred, batch.edge_index)
         loss = loss_mse + self.hparams.lambda_clash * loss_clash
 
-        self.log(f"{stage}/loss", loss, prog_bar=(stage != "train"))
-        self.log(f"{stage}/loss_mse", loss_mse)
-        self.log(f"{stage}/loss_clash", loss_clash)
+        batch_size = getattr(batch, "num_graphs", None)
+        if batch_size is None and hasattr(batch, "ptr"):
+            batch_size = batch.ptr.numel() - 1
+
+        self.log(f"{stage}/loss", loss, prog_bar=(stage != "train"), batch_size=batch_size)
+        self.log(f"{stage}/loss_mse", loss_mse, batch_size=batch_size)
+        self.log(f"{stage}/loss_clash", loss_clash, batch_size=batch_size)
         return loss
 
     def training_step(self, batch, batch_idx):
