@@ -5,6 +5,7 @@ defaults:
   - data: protein_displacement
   - model: egnn_module
   - trainer: default
+  - logger: csv
 
 paths:
   data_dir: ${hydra:runtime.cwd}/data
