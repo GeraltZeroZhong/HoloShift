@@ -23,6 +23,7 @@ dependencies:
   - matplotlib
   - seaborn
   - requests
+  - freesasa
 
   # Training / config
   - pytorch-lightning
