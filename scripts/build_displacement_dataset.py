@@ -39,39 +39,39 @@ def build_uniprot_to_af2_path(af2_dir):
 
 
 
-def analyze_residue_name_matches(af2_struct, holo_struct, af2_idx, holo_idx):
+def analyze_residue_name_matches(af2_struct, holo_struct, residue_ids):
+    af2_name_map = {rid.upper(): name for rid, name in zip(af2_struct["residue_ids"], af2_struct.get("residue_names", []))}
+    holo_name_map = {rid.upper(): name for rid, name in zip(holo_struct["residue_ids"], holo_struct.get("residue_names", []))}
+
     mismatches = []
     match_count = 0
-
-    total = len(af2_idx)
-    preview_count = min(10, total)
-    print(f"[debug] Residue-name check preview (first {preview_count}/{total} aligned residue pairs):")
-
-    for pair_pos, (i, j) in enumerate(zip(af2_idx.tolist(), holo_idx.tolist())):
-        af2_rid = af2_struct["residue_ids"][i]
-        holo_rid = holo_struct["residue_ids"][j]
-        af2_name = af2_struct.get("residue_names", ["UNK"] * len(af2_struct["residue_ids"]))[i]
-        holo_name = holo_struct.get("residue_names", ["UNK"] * len(holo_struct["residue_ids"]))[j]
-
-        if pair_pos < preview_count:
-            print(f"[debug]   AF2 {af2_rid}/{af2_name} <-> PDB {holo_rid}/{holo_name}")
-
+    for rid in residue_ids:
+        key = rid.upper()
+        af2_name = af2_name_map.get(key, "UNK")
+        holo_name = holo_name_map.get(key, "UNK")
         if af2_name == holo_name:
             match_count += 1
         else:
-            mismatches.append((af2_rid, holo_rid, af2_name, holo_name))
+            mismatches.append((rid, af2_name, holo_name))
 
+    total = len(residue_ids)
     mismatch_count = len(mismatches)
     mismatch_ratio = (mismatch_count / total) if total else 0.0
+
+    preview_count = min(10, total)
+    print(f"[debug] Residue-name check preview (first {preview_count}/{total} matched residue IDs):")
+    for rid in residue_ids[:preview_count]:
+        key = rid.upper()
+        print(f"[debug]   {rid}: AF2={af2_name_map.get(key, 'UNK')}, PDB={holo_name_map.get(key, 'UNK')}")
 
     print(f"[debug] Residue-name consistency: matches={match_count}, mismatches={mismatch_count}, mismatch_ratio={mismatch_ratio:.2%}")
     if mismatches:
         print("[debug] Residue-name mismatch examples:")
-        for af2_rid, holo_rid, af2_name, holo_name in mismatches[:10]:
-            print(f"[debug]   AF2 {af2_rid}/{af2_name} <-> PDB {holo_rid}/{holo_name}")
+        for rid, af2_name, holo_name in mismatches[:10]:
+            print(f"[debug]   {rid}: AF2={af2_name}, PDB={holo_name}")
 
     if mismatch_ratio >= 0.30:
-        print("[warning] High amino-acid mismatch ratio detected after sequence alignment. This usually indicates residue numbering misalignment. Consider renumbering the PDB file to UniProt residue IDs before building the dataset.")
+        print("[warning] High amino-acid mismatch ratio detected between AF2 and PDB residue IDs. This usually indicates residue numbering misalignment. Consider renumbering the PDB file to UniProt residue IDs before building the dataset.")
 
 
 def compute_rmsd(delta_r):
@@ -129,7 +129,7 @@ def main():
             print(f"[debug] Skip {pdb_id}: compute_displacement_target raised ValueError")
             continue
 
-        analyze_residue_name_matches(a, h, af2_idx, holo_idx)
+        analyze_residue_name_matches(a, h, ids)
         rmsd = compute_rmsd(delta_r)
 
         out = {
