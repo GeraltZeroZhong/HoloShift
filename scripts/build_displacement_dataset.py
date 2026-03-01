@@ -117,7 +117,14 @@ def main():
             print(f"[debug] Skip {pdb_id}: parse failed (af2_ok={bool(a)}, holo_ok={bool(h)})")
             continue
         try:
-            delta_r, ids, af2_aligned = compute_displacement_target(a["coords"], h["coords"], a["residue_ids"], h["residue_ids"])
+            delta_r, ids, af2_aligned, af2_idx, holo_idx = compute_displacement_target(
+                a["coords"],
+                h["coords"],
+                a["residue_ids"],
+                h["residue_ids"],
+                a["sequence"],
+                h["sequence"],
+            )
         except ValueError:
             print(f"[debug] Skip {pdb_id}: compute_displacement_target raised ValueError")
             continue
@@ -131,8 +138,8 @@ def main():
             "af2_pos": torch.tensor(af2_aligned),
             "holo_pos": torch.tensor(af2_aligned + delta_r),
             "y_delta": torch.tensor(delta_r),
-            "plddt": torch.tensor(a["plddts"][: len(ids)]).unsqueeze(1),
-            "sequence": a["sequence"][: len(ids)],
+            "plddt": torch.tensor(a["plddts"][af2_idx]).unsqueeze(1),
+            "sequence": "".join(a["sequence"][i] for i in af2_idx.tolist()),
         }
         torch.save(out, os.path.join(args.out_dir, f"{pdb_id}.pt"))
         built += 1
