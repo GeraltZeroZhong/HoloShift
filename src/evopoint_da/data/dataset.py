@@ -8,6 +8,7 @@ from torch_geometric.data import Data, InMemoryDataset
 
 
 class EvoPointDataset(InMemoryDataset):
+    MAX_PAIR_RMSD = 20.0
     SPLITS = {
         "train": (0.0, 0.7),
         "val": (0.7, 0.8),
@@ -38,21 +39,50 @@ class EvoPointDataset(InMemoryDataset):
         n = len(raw_files)
         files = raw_files[int(n * lo): int(n * hi)]
 
+        if self.split == "val":
+            print(f"[EvoPointDataset] val split selected {len(files)} files from {n} raw files")
+
         data_list = []
+        skipped_missing, skipped_rmsd = 0, 0
         for f in files:
             d = torch.load(f, weights_only=False)
             if "x" not in d or "pos" not in d or "y_delta" not in d:
+                skipped_missing += 1
                 continue
+
+            pos = d["pos"].float()
+            y_delta = d["y_delta"].float()
+
+            # Normalize coordinates to the origin to remove large-coordinate magnitude effects.
+            pos = pos - pos.mean(dim=0, keepdim=True)
+
+            pair_rmsd = d.get("pair_rmsd", d.get("rmsd", None))
+            if pair_rmsd is None:
+                pair_rmsd = torch.sqrt(torch.mean(torch.sum(y_delta * y_delta, dim=-1))).item()
+            else:
+                pair_rmsd = float(pair_rmsd)
+
+            if pair_rmsd > self.MAX_PAIR_RMSD:
+                skipped_rmsd += 1
+                continue
+
             data_list.append(
                 Data(
                     x=d["x"].float(),
-                    pos=d["pos"].float(),
-                    y=d["y_delta"].float(),
+                    pos=pos,
+                    y=y_delta,
                     edge_index=d.get("edge_index", None),
                     edge_attr=d.get("edge_attr", None),
                     pair_id=d.get("pair_id", os.path.splitext(os.path.basename(f))[0]),
                     residue_ids=d.get("residue_ids", None),
                 )
+            )
+
+        if self.split == "val":
+            print(
+                "[EvoPointDataset] val split kept "
+                f"{len(data_list)}/{len(files)} files "
+                f"(missing={skipped_missing}, rmsd>{self.MAX_PAIR_RMSD}={skipped_rmsd})"
             )
 
         if not data_list:
