@@ -9,6 +9,7 @@ import torch
 from Bio.PDB import MMCIFParser, PDBParser
 from Bio.SeqUtils import seq1
 from sklearn.decomposition import PCA
+from tqdm.auto import tqdm
 
 STANDARD_AA = {
     "ALA", "CYS", "ASP", "GLU", "PHE", "GLY", "HIS", "ILE", "LYS", "LEU",
@@ -22,7 +23,8 @@ class StructureParser:
         self.cif_parser = MMCIFParser(QUIET=True)
 
     def _get_structure(self, file_path: str):
-        parser = self.pdb_parser if file_path.endswith(".pdb") else self.cif_parser
+        lower_path = file_path.lower()
+        parser = self.pdb_parser if lower_path.endswith((".pdb", ".ent")) else self.cif_parser
         return parser.get_structure("protein", file_path)
 
     def parse_ca_structure(self, file_path: str, chain_id: Optional[str] = None) -> Optional[Dict]:
@@ -33,8 +35,9 @@ class StructureParser:
             return None
 
         coords, plddts, residue_ids, seq_chars = [], [], [], []
+        query_chain_id = chain_id.upper() if chain_id else None
         for chain in model:
-            if chain_id and chain.id != chain_id:
+            if query_chain_id and chain.id.upper() != query_chain_id:
                 continue
             for res in chain:
                 resname = res.get_resname().strip().upper()
@@ -78,8 +81,10 @@ def compute_displacement_target(
     residue_ids_af2: List[str],
     residue_ids_holo: List[str],
 ) -> Tuple[np.ndarray, List[str], np.ndarray]:
-    holo_map = {rid: i for i, rid in enumerate(residue_ids_holo)}
-    pairs = [(i, holo_map[rid], rid) for i, rid in enumerate(residue_ids_af2) if rid in holo_map]
+    holo_map = {rid.upper(): i for i, rid in enumerate(residue_ids_holo)}
+    pairs = [
+        (i, holo_map[rid.upper()], rid) for i, rid in enumerate(residue_ids_af2) if rid.upper() in holo_map
+    ]
     if not pairs:
         raise ValueError("No residue overlap between AF2 and holo structures.")
 
@@ -97,7 +102,7 @@ def compute_displacement_target(
 def parse_pae_matrix(pae_path: Optional[str], n: int) -> np.ndarray:
     if pae_path is None or not os.path.exists(pae_path):
         return np.zeros((n, n), dtype=np.float32)
-    if pae_path.endswith(".npy"):
+    if pae_path.lower().endswith(".npy"):
         pae = np.load(pae_path)
     else:
         with open(pae_path, "r", encoding="utf-8") as f:
@@ -194,8 +199,8 @@ def compute_sasa_with_freesasa(structure_path: str) -> Dict[str, float]:
     residue_areas = result.residueAreas()
 
     per_res = {}
-    for chain_id, residues in residue_areas.items():
-        for res_id, residue_area in residues.items():
+    for chain_id, residues in tqdm(residue_areas.items(), desc="FreeSASA chains", unit="chain"):
+        for res_id, residue_area in tqdm(residues.items(), desc=f"Chain {chain_id} residues", unit="res", leave=False):
             key = f"{chain_id}_{int(res_id)}"
             per_res[key] = float(residue_area.total)
 
