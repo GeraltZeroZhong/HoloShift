@@ -2,6 +2,8 @@ import argparse
 import glob
 import json
 import os
+
+import numpy as np
 import torch
 
 from evopoint_da.data.components import StructureParser, compute_displacement_target
@@ -34,6 +36,46 @@ def build_uniprot_to_af2_path(af2_dir):
         uniprot_to_path[uniprot_id] = af2_path
     return uniprot_to_path
 
+
+
+
+def analyze_residue_name_matches(af2_struct, holo_struct, af2_idx, holo_idx):
+    mismatches = []
+    match_count = 0
+
+    total = len(af2_idx)
+    preview_count = min(10, total)
+    print(f"[debug] Residue-name check preview (first {preview_count}/{total} aligned residue pairs):")
+
+    for pair_pos, (i, j) in enumerate(zip(af2_idx.tolist(), holo_idx.tolist())):
+        af2_rid = af2_struct["residue_ids"][i]
+        holo_rid = holo_struct["residue_ids"][j]
+        af2_name = af2_struct.get("residue_names", ["UNK"] * len(af2_struct["residue_ids"]))[i]
+        holo_name = holo_struct.get("residue_names", ["UNK"] * len(holo_struct["residue_ids"]))[j]
+
+        if pair_pos < preview_count:
+            print(f"[debug]   AF2 {af2_rid}/{af2_name} <-> PDB {holo_rid}/{holo_name}")
+
+        if af2_name == holo_name:
+            match_count += 1
+        else:
+            mismatches.append((af2_rid, holo_rid, af2_name, holo_name))
+
+    mismatch_count = len(mismatches)
+    mismatch_ratio = (mismatch_count / total) if total else 0.0
+
+    print(f"[debug] Residue-name consistency: matches={match_count}, mismatches={mismatch_count}, mismatch_ratio={mismatch_ratio:.2%}")
+    if mismatches:
+        print("[debug] Residue-name mismatch examples:")
+        for af2_rid, holo_rid, af2_name, holo_name in mismatches[:10]:
+            print(f"[debug]   AF2 {af2_rid}/{af2_name} <-> PDB {holo_rid}/{holo_name}")
+
+    if mismatch_ratio >= 0.30:
+        print("[warning] High amino-acid mismatch ratio detected after sequence alignment. This usually indicates residue numbering misalignment. Consider renumbering the PDB file to UniProt residue IDs before building the dataset.")
+
+
+def compute_rmsd(delta_r):
+    return float(np.sqrt(np.mean(np.sum(np.square(delta_r), axis=1))))
 
 def build_case_insensitive_file_index(directory, pattern="*.pdb"):
     index = {}
@@ -75,10 +117,20 @@ def main():
             print(f"[debug] Skip {pdb_id}: parse failed (af2_ok={bool(a)}, holo_ok={bool(h)})")
             continue
         try:
-            delta_r, ids, af2_aligned = compute_displacement_target(a["coords"], h["coords"], a["residue_ids"], h["residue_ids"])
+            delta_r, ids, af2_aligned, af2_idx, holo_idx = compute_displacement_target(
+                a["coords"],
+                h["coords"],
+                a["residue_ids"],
+                h["residue_ids"],
+                a["sequence"],
+                h["sequence"],
+            )
         except ValueError:
             print(f"[debug] Skip {pdb_id}: compute_displacement_target raised ValueError")
             continue
+
+        analyze_residue_name_matches(a, h, af2_idx, holo_idx)
+        rmsd = compute_rmsd(delta_r)
 
         out = {
             "pair_id": pdb_id,
@@ -86,12 +138,12 @@ def main():
             "af2_pos": torch.tensor(af2_aligned),
             "holo_pos": torch.tensor(af2_aligned + delta_r),
             "y_delta": torch.tensor(delta_r),
-            "plddt": torch.tensor(a["plddts"][: len(ids)]).unsqueeze(1),
-            "sequence": a["sequence"][: len(ids)],
+            "plddt": torch.tensor(a["plddts"][af2_idx]).unsqueeze(1),
+            "sequence": "".join(a["sequence"][i] for i in af2_idx.tolist()),
         }
         torch.save(out, os.path.join(args.out_dir, f"{pdb_id}.pt"))
         built += 1
-        print(f"[debug] Built sample {pdb_id}: af2='{os.path.basename(af2)}', holo='{os.path.basename(holo)}', residues={len(ids)}")
+        print(f"[debug] Built sample {pdb_id}: af2='{os.path.basename(af2)}', holo='{os.path.basename(holo)}', residues={len(ids)}, rmsd={rmsd:.4f} Å")
 
     print(f"Built {built} paired samples in {args.out_dir}")
 

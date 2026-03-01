@@ -6,6 +6,7 @@ from typing import Dict, List, Optional, Tuple
 import freesasa
 import numpy as np
 import torch
+from Bio import Align
 from Bio.PDB import MMCIFParser, PDBParser
 from Bio.SeqUtils import seq1
 from sklearn.decomposition import PCA
@@ -34,7 +35,7 @@ class StructureParser:
         except Exception:
             return None
 
-        coords, plddts, residue_ids, seq_chars = [], [], [], []
+        coords, plddts, residue_ids, residue_names, seq_chars = [], [], [], [], []
         query_chain_id = chain_id.upper() if chain_id else None
         for chain in model:
             if query_chain_id and chain.id.upper() != query_chain_id:
@@ -47,6 +48,7 @@ class StructureParser:
                 coords.append(ca.get_coord())
                 plddts.append(float(ca.get_bfactor()))
                 residue_ids.append(f"{chain.id}_{res.id[1]}")
+                residue_names.append(resname)
                 try:
                     seq_chars.append(seq1(resname))
                 except Exception:
@@ -59,6 +61,7 @@ class StructureParser:
             "coords": np.asarray(coords, dtype=np.float32),
             "plddts": np.asarray(plddts, dtype=np.float32),
             "residue_ids": residue_ids,
+            "residue_names": residue_names,
             "sequence": "".join(seq_chars),
         }
 
@@ -80,23 +83,41 @@ def compute_displacement_target(
     holo_coords: np.ndarray,
     residue_ids_af2: List[str],
     residue_ids_holo: List[str],
-) -> Tuple[np.ndarray, List[str], np.ndarray]:
-    holo_map = {rid.upper(): i for i, rid in enumerate(residue_ids_holo)}
-    pairs = [
-        (i, holo_map[rid.upper()], rid) for i, rid in enumerate(residue_ids_af2) if rid.upper() in holo_map
-    ]
-    if not pairs:
-        raise ValueError("No residue overlap between AF2 and holo structures.")
+    sequence_af2: str,
+    sequence_holo: str,
+) -> Tuple[np.ndarray, List[str], np.ndarray, np.ndarray, np.ndarray]:
+    aligner = Align.PairwiseAligner()
+    aligner.mode = "local"
 
-    af2_idx = np.array([p[0] for p in pairs], dtype=np.int64)
-    holo_idx = np.array([p[1] for p in pairs], dtype=np.int64)
-    common_ids = [p[2] for p in pairs]
+    alignments = aligner.align(sequence_af2, sequence_holo)
+    if not alignments:
+        raise ValueError("No sequence alignment between AF2 and holo structures.")
+
+    best_alignment = alignments[0]
+    af2_blocks, holo_blocks = best_alignment.aligned
+    if len(af2_blocks) == 0:
+        raise ValueError("No aligned residues found between AF2 and holo structures.")
+
+    af2_idx = []
+    holo_idx = []
+    for (af2_start, af2_end), (holo_start, holo_end) in zip(af2_blocks, holo_blocks):
+        block_len = min(af2_end - af2_start, holo_end - holo_start)
+        for offset in range(block_len):
+            af2_idx.append(af2_start + offset)
+            holo_idx.append(holo_start + offset)
+
+    if not af2_idx:
+        raise ValueError("No aligned residues found between AF2 and holo structures.")
+
+    af2_idx = np.asarray(af2_idx, dtype=np.int64)
+    holo_idx = np.asarray(holo_idx, dtype=np.int64)
+    common_ids = [residue_ids_af2[i] for i in af2_idx]
 
     af2_sub = af2_coords[af2_idx]
     holo_sub = holo_coords[holo_idx]
     af2_aligned = kabsch_align(af2_sub, holo_sub)
     delta_r = holo_sub - af2_aligned
-    return delta_r.astype(np.float32), common_ids, af2_aligned.astype(np.float32)
+    return delta_r.astype(np.float32), common_ids, af2_aligned.astype(np.float32), af2_idx, holo_idx
 
 
 def parse_pae_matrix(pae_path: Optional[str], n: int) -> np.ndarray:
