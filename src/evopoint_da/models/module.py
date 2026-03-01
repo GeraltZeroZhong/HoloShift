@@ -3,7 +3,6 @@ import torch
 import torch.nn.functional as F
 
 from .backbones.egnn import EGNNBackbone
-from .heads.regression import DisplacementHead
 
 
 class EvoPointLitModule(pl.LightningModule):
@@ -21,13 +20,15 @@ class EvoPointLitModule(pl.LightningModule):
         super().__init__()
         self.save_hyperparameters()
         self.backbone = EGNNBackbone(in_channels=in_channels, hidden_dim=hidden_dim, num_layers=num_layers, edge_dim=edge_dim)
-        self.head = DisplacementHead(in_channels=hidden_dim, hidden_dim=hidden_dim)
 
     def forward(self, batch):
-        feat, _ = self.backbone(batch.x, batch.pos, batch.edge_index, batch.edge_attr)
-        return self.head(feat)
+        _, pos_updated = self.backbone(batch.x, batch.pos, batch.edge_index, batch.edge_attr)
+        return pos_updated - batch.pos
 
     def _clash_penalty(self, pos_pred: torch.Tensor, edge_index: torch.Tensor):
+        if edge_index.numel() == 0:
+            return torch.zeros((), device=pos_pred.device, dtype=pos_pred.dtype)
+
         src, dst = edge_index
         dist = torch.norm(pos_pred[src] - pos_pred[dst], dim=-1)
         return F.relu(self.hparams.clash_cutoff - dist).mean()
