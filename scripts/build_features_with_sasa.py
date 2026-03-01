@@ -1,7 +1,9 @@
 import argparse
 import glob
+import json
 import os
 import torch
+from tqdm import tqdm
 
 from evopoint_da.data.components import (
     ESMFeatureExtractor,
@@ -23,7 +25,26 @@ def get_args():
     p.add_argument("--fit_pca", action="store_true")
     p.add_argument("--pae_dir", default="data/raw_af2")
     p.add_argument("--af2_structure_dir", default="data/raw_af2")
+    p.add_argument("--mapping_file", default="pdb_uniprot_mapping.json")
     return p.parse_args()
+
+
+def load_pdb_to_uniprot_mapping(mapping_file):
+    with open(mapping_file, "r", encoding="utf-8") as f:
+        raw_mapping = json.load(f)
+    return {pdb_id.upper(): uniprot_id for pdb_id, uniprot_id in raw_mapping.items()}
+
+
+def build_uniprot_to_af2_path(af2_dir):
+    uniprot_to_path = {}
+    for af2_path in glob.glob(os.path.join(af2_dir, "*.pdb")):
+        stem = os.path.splitext(os.path.basename(af2_path))[0]
+        if stem.startswith("AF-"):
+            uniprot_id = stem[3:]
+        else:
+            uniprot_id = stem
+        uniprot_to_path[uniprot_id] = af2_path
+    return uniprot_to_path
 
 
 def main():
@@ -33,10 +54,13 @@ def main():
     files = sorted(glob.glob(os.path.join(args.pair_dir, "*.pt")))
     extractor = ESMFeatureExtractor(model_path=args.esm_weights)
     pca = PCAReducer(n_components=args.pca_dim)
+    pdb_to_uniprot = load_pdb_to_uniprot_mapping(args.mapping_file)
+    uniprot_to_af2_path = build_uniprot_to_af2_path(args.af2_structure_dir)
+    af2_casefold = {k.lower(): v for k, v in uniprot_to_af2_path.items()}
 
     if args.fit_pca:
         buf = []
-        for f in files:
+        for f in tqdm(files, desc="Fitting PCA", unit="file"):
             d = torch.load(f, weights_only=False)
             buf.append(extractor.extract_residue_embeddings(d["sequence"]))
         pca.fit(buf)
@@ -44,13 +68,23 @@ def main():
     else:
         pca.load(args.pca_path)
 
-    for f in files:
+    for f in tqdm(files, desc="Building graph features", unit="file"):
         d = torch.load(f, weights_only=False)
         stem = d["pair_id"]
         emb = extractor.extract_residue_embeddings(d["sequence"])
         x_esm = pca.transform(emb)
 
-        af2_file = os.path.join(args.af2_structure_dir, f"{stem}.pdb")
+        uniprot_id = pdb_to_uniprot.get(stem.upper())
+        af2_file = None
+        if uniprot_id:
+            af2_file = uniprot_to_af2_path.get(uniprot_id)
+            if not af2_file:
+                af2_file = af2_casefold.get(uniprot_id.lower())
+
+        if not af2_file:
+            print(f"[debug] Skip {stem}: AF2 structure not found via mapping file")
+            continue
+
         sasa_map = compute_sasa_with_freesasa(af2_file)
         sasa = torch.tensor([sasa_map.get(rid, 0.0) for rid in d["residue_ids"]], dtype=torch.float32).unsqueeze(1)
         plddt = d["plddt"].float()
