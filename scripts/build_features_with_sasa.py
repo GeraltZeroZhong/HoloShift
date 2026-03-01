@@ -3,6 +3,7 @@ import glob
 import json
 import os
 import torch
+from tqdm import tqdm
 
 from evopoint_da.data.components import (
     ESMFeatureExtractor,
@@ -59,7 +60,7 @@ def main():
 
     if args.fit_pca:
         buf = []
-        for f in files:
+        for f in tqdm(files, desc="Fitting PCA", unit="file"):
             d = torch.load(f, weights_only=False)
             buf.append(extractor.extract_residue_embeddings(d["sequence"]))
         pca.fit(buf)
@@ -67,7 +68,7 @@ def main():
     else:
         pca.load(args.pca_path)
 
-    for f in files:
+    for f in tqdm(files, desc="Building graph features", unit="file"):
         d = torch.load(f, weights_only=False)
         stem = d["pair_id"]
         emb = extractor.extract_residue_embeddings(d["sequence"])
