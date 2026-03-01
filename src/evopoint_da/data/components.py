@@ -1,208 +1,198 @@
-# src/evopoint_da/data/components.py
-
-import torch
-import os
-import numpy as np
-import pickle
 import json
+import os
+import pickle
+import subprocess
+from typing import Dict, List, Optional, Tuple
 
-# === 导入 ESMC 相关组件 ===
-from esm.models.esmc import ESMC
-from esm.sdk.api import ESMProtein
-# 尝试导入 Tokenizer，兼容不同 esm 版本路径
-try:
-    from esm.tokenization import EsmSequenceTokenizer
-except ImportError:
-    try:
-        from esm.tokenization.sequence_tokenizer import EsmSequenceTokenizer
-    except ImportError:
-        pass 
-# ========================
-
-from Bio.PDB import PDBParser, MMCIFParser, NeighborSearch, Selection
+import numpy as np
+import torch
+from Bio.PDB import MMCIFParser, PDBParser
 from Bio.SeqUtils import seq1
 from sklearn.decomposition import PCA
-from typing import List, Dict, Optional, Tuple
 
 STANDARD_AA = {
-    "ALA", "CYS", "ASP", "GLU", "PHE", "GLY", "HIS", "ILE", "LYS", "LEU", 
-    "MET", "ASN", "PRO", "GLN", "ARG", "SER", "THR", "VAL", "TRP", "TYR"
+    "ALA", "CYS", "ASP", "GLU", "PHE", "GLY", "HIS", "ILE", "LYS", "LEU",
+    "MET", "ASN", "PRO", "GLN", "ARG", "SER", "THR", "VAL", "TRP", "TYR",
 }
 
-class ESMFeatureExtractor:
-    def __init__(self, model_path: str, device: str = None):
-        """
-        Args:
-            model_path: 本地 .pth 文件的完整路径
-        """
-        self.device = device if device else ('cuda' if torch.cuda.is_available() else 'cpu')
-        print(f"[ESMC] Initializing model structure (600M) and loading local weights...")
-        
-        # 1. 实例化 Tokenizer
-        try:
-            # 尝试无参初始化 (通常使用库内置词表)
-            self.tokenizer = EsmSequenceTokenizer()
-        except Exception as e:
-            print(f"Warning: Default tokenizer init failed ({e}), attempting fallback with model name...")
-            self.tokenizer = EsmSequenceTokenizer(model_name="esmc_600m")
-
-        # 2. 定义 ESMC-600M 模型参数 (硬编码以避免依赖 config.json)
-        model_args = {
-            "d_model": 1152,
-            "n_layers": 36,
-            "n_heads": 18,
-        }
-        
-        # 3. 手动初始化模型结构
-        try:
-            self.model = ESMC(tokenizer=self.tokenizer, **model_args)
-        except Exception as e:
-            raise RuntimeError(f"ESMC init failed: {e}. Please check 'esm' library version.")
-
-        # 4. 加载本地权重
-        self.model = self.model.to(self.device)
-        
-        if not os.path.exists(model_path):
-            raise FileNotFoundError(f"❌ 找不到权重文件: {model_path}")
-            
-        print(f"[ESMC] Loading state dict from {model_path}...")
-        state_dict = torch.load(model_path, map_location=self.device)
-        
-        # 兼容性处理: 提取 state_dict
-        if "state_dict" in state_dict:
-            state_dict = state_dict["state_dict"]
-        elif "model" in state_dict:
-            state_dict = state_dict["model"]
-            
-        # 移除前缀 (module. 或 model.) 以匹配手动初始化的模型 keys
-        new_state_dict = {}
-        for k, v in state_dict.items():
-            new_key = k
-            if new_key.startswith("module."): new_key = new_key[7:]
-            if new_key.startswith("model."): new_key = new_key[6:]
-            new_state_dict[new_key] = v
-            
-        # 加载
-        msg = self.model.load_state_dict(new_state_dict, strict=False)
-        print(f"[ESMC] Weights loaded. {msg}")
-        
-        self.model.eval()
-
-    @torch.no_grad()
-    def extract_residue_embeddings(self, sequence: str) -> torch.Tensor:
-        # 1. 截断序列
-        if len(sequence) > 1022: sequence = sequence[:1022]
-        
-        # 2. Tokenize
-        protein = ESMProtein(sequence=sequence)
-        tokenized_output = self.model.encode(protein)
-        
-        # === 修复: 提取 Tensor 并增加 Batch 维度 ===
-        # tokenized_output.sequence 是 Tensor (SeqLen,)
-        input_ids = tokenized_output.sequence
-        
-        # 关键修正：必须是 (1, SeqLen) 才能正确广播 Attention Heads
-        if input_ids.dim() == 1:
-            input_ids = input_ids.unsqueeze(0)
-            
-        input_ids = input_ids.to(self.device)
-        
-        # 可选：显式构建 mask (虽非必须，但更稳健)
-        attention_mask = torch.ones_like(input_ids, dtype=torch.bool, device=self.device)
-        
-        # 3. Forward
-        try:
-            output = self.model(input_ids, attention_mask=attention_mask)
-        except TypeError:
-            # 如果旧版 API 不接受 attention_mask
-            output = self.model(input_ids)
-        
-        # 4. 提取输出
-        # output.embeddings Shape: (1, SeqLen, Dim)
-        # 切片: [0] 取 batch, [1:-1] 去除 BOS/EOS
-        return output.embeddings[0, 1:-1, :].cpu()
 
 class StructureParser:
     def __init__(self):
         self.pdb_parser = PDBParser(QUIET=True)
         self.cif_parser = MMCIFParser(QUIET=True)
 
-    def parse_file_with_labels(self, file_path: str, chain_id: Optional[str] = None) -> Optional[Dict]:
-        is_pdb = file_path.endswith('.pdb')
-        parser = self.pdb_parser if is_pdb else self.cif_parser
+    def _get_structure(self, file_path: str):
+        parser = self.pdb_parser if file_path.endswith(".pdb") else self.cif_parser
+        return parser.get_structure("protein", file_path)
+
+    def parse_ca_structure(self, file_path: str, chain_id: Optional[str] = None) -> Optional[Dict]:
         try:
-            structure = parser.get_structure('protein', file_path)
-            model = list(structure)[0]
-        except: return None
+            structure = self._get_structure(file_path)
+            model = next(structure.get_models())
+        except Exception:
+            return None
 
-        all_atoms = [a for a in Selection.unfold_entities(model, 'A') if a.get_parent().get_resname().strip().upper() not in {"HOH", "WAT", "H2O"}]
-        if not all_atoms: return None
-        ns = NeighborSearch(all_atoms)
-
-        coords, seq_chars, plddts, residue_ids, labels = [], [], [], [], []
-        
+        coords, plddts, residue_ids, seq_chars = [], [], [], []
         for chain in model:
-            if chain_id and chain.id != chain_id: continue
-            
+            if chain_id and chain.id != chain_id:
+                continue
             for res in chain:
-                res_name = res.get_resname().strip().upper()
-                is_standard = (res.id[0] == ' ') and (res_name in STANDARD_AA)
-                
-                if not is_standard: continue 
-                if 'CA' not in res: continue
-                
-                ca = res['CA']
+                resname = res.get_resname().strip().upper()
+                if res.id[0] != " " or resname not in STANDARD_AA or "CA" not in res:
+                    continue
+                ca = res["CA"]
                 coords.append(ca.get_coord())
-                plddts.append(ca.get_bfactor()) 
+                plddts.append(float(ca.get_bfactor()))
                 residue_ids.append(f"{chain.id}_{res.id[1]}")
-                
-                try: aa = seq1(res_name)
-                except: aa = 'X'
-                seq_chars.append(aa if len(aa)==1 else 'X')
-                
-                is_binding = 0.0
-                neighbors = ns.search(ca.get_coord(), 6.0)
-                
-                for n_atom in neighbors:
-                    n_res = n_atom.get_parent()
-                    if n_res == res: continue 
+                try:
+                    seq_chars.append(seq1(resname))
+                except Exception:
+                    seq_chars.append("X")
 
-                    n_name = n_res.get_resname().strip().upper()
-                    is_ligand_res = (n_name not in STANDARD_AA) or (n_res.id[0] != ' ')
-                    
-                    if is_ligand_res:
-                        is_binding = 1.0
-                        break
-                
-                labels.append(is_binding)
-
-        if not coords: return None
-
-        coords_np = np.array(coords, dtype=np.float32)
-        coords_np -= coords_np.mean(axis=0)
+        if not coords:
+            return None
 
         return {
-            "coords": coords_np, 
-            "sequence": "".join(seq_chars),
-            "plddts": np.array(plddts, dtype=np.float32),
+            "coords": np.asarray(coords, dtype=np.float32),
+            "plddts": np.asarray(plddts, dtype=np.float32),
             "residue_ids": residue_ids,
-            "labels": np.array(labels, dtype=np.float32)
+            "sequence": "".join(seq_chars),
         }
+
+
+def kabsch_align(src: np.ndarray, dst: np.ndarray) -> np.ndarray:
+    src_c = src - src.mean(axis=0, keepdims=True)
+    dst_c = dst - dst.mean(axis=0, keepdims=True)
+    h = src_c.T @ dst_c
+    u, _, vt = np.linalg.svd(h)
+    r = vt.T @ u.T
+    if np.linalg.det(r) < 0:
+        vt[-1, :] *= -1
+        r = vt.T @ u.T
+    return src_c @ r + dst.mean(axis=0, keepdims=True)
+
+
+def compute_displacement_target(
+    af2_coords: np.ndarray,
+    holo_coords: np.ndarray,
+    residue_ids_af2: List[str],
+    residue_ids_holo: List[str],
+) -> Tuple[np.ndarray, List[str], np.ndarray]:
+    holo_map = {rid: i for i, rid in enumerate(residue_ids_holo)}
+    pairs = [(i, holo_map[rid], rid) for i, rid in enumerate(residue_ids_af2) if rid in holo_map]
+    if not pairs:
+        raise ValueError("No residue overlap between AF2 and holo structures.")
+
+    af2_idx = np.array([p[0] for p in pairs], dtype=np.int64)
+    holo_idx = np.array([p[1] for p in pairs], dtype=np.int64)
+    common_ids = [p[2] for p in pairs]
+
+    af2_sub = af2_coords[af2_idx]
+    holo_sub = holo_coords[holo_idx]
+    af2_aligned = kabsch_align(af2_sub, holo_sub)
+    delta_r = holo_sub - af2_aligned
+    return delta_r.astype(np.float32), common_ids, af2_aligned.astype(np.float32)
+
+
+def parse_pae_matrix(pae_path: Optional[str], n: int) -> np.ndarray:
+    if pae_path is None or not os.path.exists(pae_path):
+        return np.zeros((n, n), dtype=np.float32)
+    if pae_path.endswith(".npy"):
+        pae = np.load(pae_path)
+    else:
+        with open(pae_path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        if isinstance(raw, dict) and "predicted_aligned_error" in raw:
+            pae = np.asarray(raw["predicted_aligned_error"], dtype=np.float32)
+        else:
+            pae = np.asarray(raw, dtype=np.float32)
+    return pae.astype(np.float32)
+
+
+def build_knn_edges(pos: torch.Tensor, k: int = 16, pae: Optional[np.ndarray] = None):
+    n = pos.shape[0]
+    dist = torch.cdist(pos, pos)
+    knn_idx = dist.topk(k=min(k + 1, n), largest=False).indices[:, 1:]
+
+    row = torch.arange(n, device=pos.device).unsqueeze(1).repeat(1, knn_idx.shape[1]).reshape(-1)
+    col = knn_idx.reshape(-1)
+    edge_index = torch.stack([row, col], dim=0)
+
+    edge_dist = torch.norm(pos[row] - pos[col], dim=1, keepdim=True)
+    if pae is None:
+        edge_pae = torch.zeros_like(edge_dist)
+    else:
+        pae_t = torch.as_tensor(pae, dtype=pos.dtype, device=pos.device)
+        edge_pae = pae_t[row, col].unsqueeze(1)
+    edge_attr = torch.cat([edge_dist, edge_pae], dim=1)
+    return edge_index, edge_attr
+
+
+class ESMFeatureExtractor:
+    """Lightweight wrapper that reuses the original script contract while avoiding hard dependency at import."""
+
+    def __init__(self, model_path: str, device: Optional[str] = None):
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.model_path = model_path
+        try:
+            from esm.models.esmc import ESMC
+            from esm.sdk.api import ESMProtein
+            from esm.tokenization import EsmSequenceTokenizer
+        except Exception as e:
+            raise RuntimeError(f"ESM package unavailable: {e}")
+
+        self.ESMProtein = ESMProtein
+        self.tokenizer = EsmSequenceTokenizer()
+        self.model = ESMC(tokenizer=self.tokenizer, d_model=1152, n_layers=36, n_heads=18).to(self.device)
+        state = torch.load(model_path, map_location=self.device)
+        if isinstance(state, dict) and "state_dict" in state:
+            state = state["state_dict"]
+        cleaned = {k.replace("module.", "").replace("model.", ""): v for k, v in state.items()}
+        self.model.load_state_dict(cleaned, strict=False)
+        self.model.eval()
+
+    @torch.no_grad()
+    def extract_residue_embeddings(self, sequence: str) -> torch.Tensor:
+        sequence = sequence[:1022]
+        protein = self.ESMProtein(sequence=sequence)
+        tokenized = self.model.encode(protein).sequence.unsqueeze(0).to(self.device)
+        out = self.model(tokenized)
+        return out.embeddings[0, 1:-1].cpu()
+
 
 class PCAReducer:
     def __init__(self, n_components: int = 128):
         self.n_components = n_components
         self.pca = PCA(n_components=n_components)
         self.is_fitted = False
+
     def fit(self, data_list: List[torch.Tensor]):
-        X = torch.cat(data_list, dim=0).numpy()
-        self.pca.fit(X)
+        x = torch.cat(data_list, dim=0).numpy()
+        self.pca.fit(x)
         self.is_fitted = True
+
     def transform(self, x: torch.Tensor) -> torch.Tensor:
-        if not self.is_fitted: raise RuntimeError("PCA Not fitted")
+        if not self.is_fitted:
+            raise RuntimeError("PCA not fitted")
         return torch.from_numpy(self.pca.transform(x.numpy())).float()
+
     def save(self, path: str):
-        with open(path, 'wb') as f: pickle.dump(self.pca, f)
+        with open(path, "wb") as f:
+            pickle.dump(self.pca, f)
+
     def load(self, path: str):
-        with open(path, 'rb') as f: self.pca = pickle.load(f)
+        with open(path, "rb") as f:
+            self.pca = pickle.load(f)
         self.is_fitted = True
+
+
+def compute_sasa_with_freesasa(structure_path: str) -> Dict[str, float]:
+    cmd = ["freesasa", "--format=json", structure_path]
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    data = json.loads(proc.stdout)
+    per_res = {}
+    for chain_id, residues in data.get("residueAreas", {}).items():
+        for res_id, vals in residues.items():
+            key = f"{chain_id}_{int(res_id)}"
+            per_res[key] = float(vals.get("total", 0.0))
+    return per_res

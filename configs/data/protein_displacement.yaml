@@ -1,0 +1,4 @@
+_target_: evopoint_da.data.datamodule.EvoPointDataModule
+data_dir: ${paths.data_dir}/processed_graphs
+batch_size: 4
+num_workers: 0

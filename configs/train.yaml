@@ -2,8 +2,8 @@
 
 defaults:
   - _self_
-  - data: protein_seg
-  - model: da_module
+  - data: protein_displacement
+  - model: egnn_module
   - trainer: default
 
 paths:
