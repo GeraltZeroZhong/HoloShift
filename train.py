@@ -5,7 +5,6 @@ import hydra
 import pytorch_lightning as pl
 from omegaconf import DictConfig
 from pytorch_lightning.callbacks import ModelCheckpoint, RichProgressBar
-from pytorch_lightning.loggers import CSVLogger
 from pytorch_lightning import seed_everything
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "src"))
@@ -36,10 +35,12 @@ def main(cfg: DictConfig):
         ),
         RichProgressBar(),
     ]
-    logger = CSVLogger(save_dir=os.path.join(root, "logs"), name="holoshift")
+
+    logger = hydra.utils.instantiate(cfg.logger)
 
     trainer = hydra.utils.instantiate(cfg.trainer, callbacks=callbacks, logger=logger, enable_checkpointing=True)
     trainer.fit(model=model, datamodule=datamodule)
+    trainer.test(model=model, datamodule=datamodule, ckpt_path="best")
 
 
 if __name__ == "__main__":
