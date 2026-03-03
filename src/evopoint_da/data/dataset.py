@@ -60,6 +60,7 @@ class EvoPointDataset(InMemoryDataset):
                     x=d["x"].float(),
                     pos=pos,
                     y=y_delta,
+                    plddt=d.get("plddt", None),
                     edge_index=d.get("edge_index", None),
                     edge_attr=d.get("edge_attr", None),
                     pair_id=d.get("pair_id", os.path.splitext(os.path.basename(f))[0]),
