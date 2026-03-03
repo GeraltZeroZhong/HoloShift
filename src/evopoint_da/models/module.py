@@ -82,23 +82,55 @@ class EvoPointLitModule(pl.LightningModule):
     def test_step(self, batch, batch_idx):
         delta_pred = self.forward(batch)
         delta_pred_real = delta_pred * self.coord_scale
-        
+
         loss_mse_real = F.mse_loss(delta_pred_real, batch.y)
         pos_pred = batch.pos + delta_pred_real
         loss_clash = self._clash_penalty(pos_pred, batch.edge_index)
-        
+
         loss = loss_mse_real + self.hparams.lambda_clash * loss_clash
 
         self.log("test/loss", loss)
         self.log("test/loss_mse", loss_mse_real)
         self.log("test/loss_clash", loss_clash)
-        
+
         # Baseline (预测0的 Loss)
-        self.log("test/baseline_mse", F.mse_loss(torch.zeros_like(batch.y), batch.y))
-        
+        baseline_delta = torch.zeros_like(batch.y)
+        self.log("test/baseline_mse", F.mse_loss(baseline_delta, batch.y))
+
         # 监控幅度 (如果这个值 > 0.1，说明模型活过来了)
         self.log("test/pred_magnitude", torch.norm(delta_pred_real, dim=-1).mean())
-        
+
+        # Flexible regions: only residues with ground-truth displacement magnitude > 1.0 Å
+        gt_disp_mag = torch.norm(batch.y, dim=-1)
+        flexible_mask = gt_disp_mag > 1.0
+        if flexible_mask.any():
+            flex_mse = F.mse_loss(delta_pred_real[flexible_mask], batch.y[flexible_mask])
+            baseline_flex_mse = F.mse_loss(baseline_delta[flexible_mask], batch.y[flexible_mask])
+            self.log("test/flexible_mse", flex_mse)
+            self.log("test/flexible_rmsd", torch.sqrt(flex_mse))
+            self.log("test/baseline_flexible_mse", baseline_flex_mse)
+            self.log("test/baseline_flexible_rmsd", torch.sqrt(baseline_flex_mse))
+
+        # pLDDT-binned metrics (raw pLDDT scale: 0~100)
+        if hasattr(batch, "plddt") and batch.plddt is not None:
+            plddt = batch.plddt
+            if plddt.dim() > 1:
+                plddt = plddt.squeeze(-1)
+
+            plddt_bins = {
+                "le50": plddt <= 50.0,
+                "50to70": (plddt > 50.0) & (plddt <= 70.0),
+                "gt70": plddt > 70.0,
+            }
+            for suffix, mask in plddt_bins.items():
+                if mask.any():
+                    bin_mse = F.mse_loss(delta_pred_real[mask], batch.y[mask])
+                    baseline_bin_mse = F.mse_loss(baseline_delta[mask], batch.y[mask])
+                    self.log(f"test/plddt_{suffix}_mse", bin_mse)
+                    self.log(f"test/plddt_{suffix}_rmsd", torch.sqrt(bin_mse))
+                    self.log(f"test/baseline_plddt_{suffix}_mse", baseline_bin_mse)
+                    self.log(f"test/baseline_plddt_{suffix}_rmsd", torch.sqrt(baseline_bin_mse))
+
         return loss
 
     def configure_optimizers(self):
