@@ -101,35 +101,43 @@ def main():
         if not af2:
             af2 = af2_casefold.get(uniprot_id.lower())
         if not af2:
-            print(f"[debug] Skip {pdb_id}: AF2 structure not found for UniProt '{uniprot_id}'")
+            # print(f"[debug] Skip {pdb_id}: AF2 not found")
             continue
 
         holo = os.path.join(args.holo_dir, f"{pdb_id}.pdb")
         if not os.path.exists(holo):
             holo = holo_casefold.get(pdb_id.lower())
         if not holo or not os.path.exists(holo):
-            print(f"[debug] Skip {pdb_id}: holo structure not found (case-insensitive lookup tried)")
             continue
 
-        a = parser.parse_ca_structure(af2)
-        h = parser.parse_ca_structure(holo)
-        if not a or not h:
-            print(f"[debug] Skip {pdb_id}: parse failed (af2_ok={bool(a)}, holo_ok={bool(h)})")
+        # --- 修改开始: 适应新的字典返回结构 ---
+        af2_chains = parser.parse_ca_structure(af2)
+        holo_chains = parser.parse_ca_structure(holo)
+        
+        if not af2_chains or not holo_chains:
+            print(f"[debug] Skip {pdb_id}: parse failed or all chains < 20 AA")
             continue
+
         try:
-            delta_r, ids, af2_aligned, af2_idx, holo_idx = compute_displacement_target(
-                a["coords"],
-                h["coords"],
-                a["residue_ids"],
-                h["residue_ids"],
-                a["sequence"],
-                h["sequence"],
+            # 传入整个链字典，让函数去挑选最佳匹配
+            delta_r, ids, af2_aligned, af2_idx, holo_idx, best_af2_chain_id = compute_displacement_target(
+                af2_chains,
+                holo_chains,
             )
-        except ValueError:
-            print(f"[debug] Skip {pdb_id}: compute_displacement_target raised ValueError")
+        except ValueError as e:
+            print(f"[debug] Skip {pdb_id}: {e}")
             continue
+        
+        # 获取被选中的那条链的数据
+        selected_af2_data = af2_chains[best_af2_chain_id]
+        selected_holo_data = holo_chains[list(holo_chains.keys())[0]] # 仅用于debug打印，具体哪个holo链被选中在内部处理了，若需精确打印需修改返回值
+        
+        # --- 修改结束 ---
 
-        analyze_residue_name_matches(a, h, af2_idx, holo_idx)
+        # analyze_residue_name_matches 逻辑需要微调，或者直接注释掉，因为结构变了
+        # 如果你想保留 debug，需要传入选中的字典:
+        # analyze_residue_name_matches(selected_af2_data, selected_holo_data, af2_idx, holo_idx)
+
         rmsd = compute_rmsd(delta_r)
 
         out = {
@@ -138,14 +146,17 @@ def main():
             "af2_pos": torch.tensor(af2_aligned),
             "holo_pos": torch.tensor(af2_aligned + delta_r),
             "y_delta": torch.tensor(delta_r),
-            "plddt": torch.tensor(a["plddts"][af2_idx]).unsqueeze(1),
-            "sequence": "".join(a["sequence"][i] for i in af2_idx.tolist()),
+            # 注意：pLDDT 和 sequence 必须来自选中的那条链
+            "plddt": torch.tensor(selected_af2_data["plddts"][af2_idx]).unsqueeze(1),
+            "sequence": "".join(selected_af2_data["sequence"][i] for i in af2_idx.tolist()),
         }
         torch.save(out, os.path.join(args.out_dir, f"{pdb_id}.pt"))
         built += 1
-        print(f"[debug] Built sample {pdb_id}: af2='{os.path.basename(af2)}', holo='{os.path.basename(holo)}', residues={len(ids)}, rmsd={rmsd:.4f} Å")
+        print(f"[debug] Built {pdb_id}: chain {best_af2_chain_id}, res={len(ids)}, rmsd={rmsd:.4f} Å")
 
-    print(f"Built {built} paired samples in {args.out_dir}")
+    print(f"Built {built} paired samples.")
+
+
 
 
 if __name__ == "__main__":
