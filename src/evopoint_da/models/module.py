@@ -98,7 +98,14 @@ class EvoPointLitModule(pl.LightningModule):
             upper = lower + 1
             disp_mask = (gt_disp_mag >= float(lower)) & (gt_disp_mag < float(upper))
             count = int(disp_mask.sum().item())
-            self.log(f"test/disp_{lower}to{upper}_count", float(count))
+            self.log(
+                f"test/disp_{lower}to{upper}_count",
+                torch.tensor(float(count), device=self.device),
+                on_step=False,
+                on_epoch=True,
+                reduce_fx=torch.sum,
+                batch_size=1,
+            )
             if count > 0:
                 bin_mse = F.mse_loss(delta_pred_real[disp_mask], batch.y[disp_mask])
                 self.log(f"test/disp_{lower}to{upper}_mse", bin_mse)
@@ -106,7 +113,14 @@ class EvoPointLitModule(pl.LightningModule):
 
         disp_mask_gt10 = gt_disp_mag >= 10.0
         count_gt10 = int(disp_mask_gt10.sum().item())
-        self.log("test/disp_gt10_count", float(count_gt10))
+        self.log(
+            "test/disp_gt10_count",
+            torch.tensor(float(count_gt10), device=self.device),
+            on_step=False,
+            on_epoch=True,
+            reduce_fx=torch.sum,
+            batch_size=1,
+        )
         if count_gt10 > 0:
             disp_gt10_mse = F.mse_loss(delta_pred_real[disp_mask_gt10], batch.y[disp_mask_gt10])
             self.log("test/disp_gt10_mse", disp_gt10_mse)
@@ -141,7 +155,14 @@ class EvoPointLitModule(pl.LightningModule):
                     plddt_mask = (plddt >= float(lower)) & (plddt <= float(upper))
 
                 count = int(plddt_mask.sum().item())
-                self.log(f"test/plddt_{lower}to{upper}_count", float(count))
+                self.log(
+                    f"test/plddt_{lower}to{upper}_count",
+                    torch.tensor(float(count), device=self.device),
+                    on_step=False,
+                    on_epoch=True,
+                    reduce_fx=torch.sum,
+                    batch_size=1,
+                )
                 if count > 0:
                     bin_mse = F.mse_loss(delta_pred_real[plddt_mask], batch.y[plddt_mask])
                     self.log(f"test/plddt_{lower}to{upper}_mse", bin_mse)
