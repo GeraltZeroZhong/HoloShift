@@ -111,6 +111,25 @@ class EvoPointLitModule(pl.LightningModule):
             self.log("test/baseline_flexible_mse", baseline_flex_mse)
             self.log("test/baseline_flexible_rmsd", torch.sqrt(baseline_flex_mse))
 
+        # Fine-grained displacement bins: [0,1), [1,2), ..., [9,10), [10,+inf)
+        for lower in range(10):
+            upper = lower + 1
+            disp_mask = (gt_disp_mag >= float(lower)) & (gt_disp_mag < float(upper))
+            count = int(disp_mask.sum().item())
+            self.log(f"test/disp_{lower}to{upper}_count", float(count))
+            if count > 0:
+                bin_mse = F.mse_loss(delta_pred_real[disp_mask], batch.y[disp_mask])
+                self.log(f"test/disp_{lower}to{upper}_mse", bin_mse)
+                self.log(f"test/disp_{lower}to{upper}_rmsd", torch.sqrt(bin_mse))
+
+        disp_mask_gt10 = gt_disp_mag >= 10.0
+        count_gt10 = int(disp_mask_gt10.sum().item())
+        self.log("test/disp_gt10_count", float(count_gt10))
+        if count_gt10 > 0:
+            disp_gt10_mse = F.mse_loss(delta_pred_real[disp_mask_gt10], batch.y[disp_mask_gt10])
+            self.log("test/disp_gt10_mse", disp_gt10_mse)
+            self.log("test/disp_gt10_rmsd", torch.sqrt(disp_gt10_mse))
+
         # pLDDT-binned metrics (raw pLDDT scale: 0~100)
         if hasattr(batch, "plddt") and batch.plddt is not None:
             plddt = batch.plddt
@@ -130,6 +149,21 @@ class EvoPointLitModule(pl.LightningModule):
                     self.log(f"test/plddt_{suffix}_rmsd", torch.sqrt(bin_mse))
                     self.log(f"test/baseline_plddt_{suffix}_mse", baseline_bin_mse)
                     self.log(f"test/baseline_plddt_{suffix}_rmsd", torch.sqrt(baseline_bin_mse))
+
+            # Fine-grained pLDDT bins: [0,10), [10,20), ..., [90,100]
+            for lower in range(0, 100, 10):
+                upper = lower + 10
+                if upper < 100:
+                    plddt_mask = (plddt >= float(lower)) & (plddt < float(upper))
+                else:
+                    plddt_mask = (plddt >= float(lower)) & (plddt <= float(upper))
+
+                count = int(plddt_mask.sum().item())
+                self.log(f"test/plddt_{lower}to{upper}_count", float(count))
+                if count > 0:
+                    bin_mse = F.mse_loss(delta_pred_real[plddt_mask], batch.y[plddt_mask])
+                    self.log(f"test/plddt_{lower}to{upper}_mse", bin_mse)
+                    self.log(f"test/plddt_{lower}to{upper}_rmsd", torch.sqrt(bin_mse))
 
         return loss
 
