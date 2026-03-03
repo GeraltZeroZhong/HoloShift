@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 
-
 class EGNNLayer(nn.Module):
     def __init__(self, feat_dim: int, edge_dim: int = 2, hidden_dim: int = 128):
         super().__init__()
@@ -19,9 +18,17 @@ class EGNNLayer(nn.Module):
             nn.LayerNorm(hidden_dim),
             nn.Linear(hidden_dim, feat_dim),
         )
-        self.coord_mlp = nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.SiLU(), nn.Linear(hidden_dim, 1))
-        nn.init.zeros_(self.coord_mlp[-1].weight)
+        self.coord_mlp = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim), 
+            nn.SiLU(), 
+            nn.Linear(hidden_dim, 1)
+        )
+        
+        # === 核心修改: 必须给一个非零的初始扰动 ===
+        # gain=0.001 既保证了初始位移很小（不破坏结构），又保证了梯度存在
+        nn.init.xavier_uniform_(self.coord_mlp[-1].weight, gain=0.001)
         nn.init.zeros_(self.coord_mlp[-1].bias)
+        # =========================================
 
     def forward(self, x, pos, edge_index, edge_attr):
         src, dst = edge_index
@@ -39,7 +46,6 @@ class EGNNLayer(nn.Module):
         agg_trans.index_add_(0, dst, trans)
         pos = pos + agg_trans
         return x, pos
-
 
 class EGNNBackbone(nn.Module):
     def __init__(self, in_channels: int, hidden_dim: int = 128, num_layers: int = 4, edge_dim: int = 2):
