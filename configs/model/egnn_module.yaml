@@ -3,7 +3,7 @@ in_channels: 130
 hidden_dim: 128
 num_layers: 4
 edge_dim: 2
-lr: 3e-4
+lr: 1e-4
 weight_decay: 1e-4
 lambda_clash: 0.1
 clash_cutoff: 2.0
