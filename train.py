@@ -8,7 +8,7 @@ from omegaconf import DictConfig
 from pytorch_lightning.callbacks import ModelCheckpoint, RichProgressBar
 from pytorch_lightning import seed_everything
 
-sys.path.append(os.path.join(os.path.dirname(__file__), "src"))
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
 
 
 @hydra.main(version_base="1.3", config_path="configs", config_name="train")
