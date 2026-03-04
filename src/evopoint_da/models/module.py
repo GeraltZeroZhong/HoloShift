@@ -21,6 +21,8 @@ class EvoPointLitModule(pl.LightningModule):
         mse_weight_rise_center: float = 1.0,
         mse_weight_fall_center: float = 5.0,
         mse_hard_gamma: float = 1.5,
+        mse_hard_beta: float = 3.0,
+        mse_hard_p: float = 1.5,
         plddt_weight_alpha: float = 1.0,
         plddt_weight_sigma: float = 5.0,
         node_mse_cap: float = 2.0,
@@ -59,8 +61,9 @@ class EvoPointLitModule(pl.LightningModule):
         mse_weights = w_min + w_peak * rise * fall
 
         in_1_5 = (target_mag_real >= 1.0) & (target_mag_real <= 5.0)
+        t = (target_mag_real.clamp(1.0, 5.0) - 1.0) / 4.0
         w_hard = torch.ones_like(target_mag_real)
-        w_hard[in_1_5] = target_mag_real[in_1_5] ** self.hparams.mse_hard_gamma
+        w_hard[in_1_5] = 1.0 + self.hparams.mse_hard_beta * (t[in_1_5] ** self.hparams.mse_hard_p)
         mse_weights = mse_weights * w_hard
 
         if hasattr(batch, "plddt") and batch.plddt is not None:
@@ -73,10 +76,13 @@ class EvoPointLitModule(pl.LightningModule):
             )
             mse_weights = mse_weights * w_plddt
 
-        loss_node_mse = F.mse_loss(delta_pred, target_norm, reduction='none').mean(dim=-1)
-        loss_node_mse = loss_node_mse.clamp(max=self.hparams.node_mse_cap)
+        eps = 1e-8
+        mse_weights = mse_weights / (mse_weights.mean().detach() + eps)
+
+        loss_node_mse = F.smooth_l1_loss(delta_pred, target_norm, reduction='none').mean(dim=-1)
         loss_mse = (loss_node_mse * mse_weights).mean()
-        direction_mask = target_mag_real > self.hparams.direction_mask_threshold
+        mask_focus = (target_mag_real >= 0.5) & (target_mag_real <= 5.0)
+        direction_mask = mask_focus
         
         if direction_mask.sum() > 0:
             cos_sim = F.cosine_similarity(delta_pred[direction_mask], target_norm[direction_mask], dim=-1, eps=1e-6)
