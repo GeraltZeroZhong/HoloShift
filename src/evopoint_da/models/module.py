@@ -15,6 +15,14 @@ class EvoPointLitModule(pl.LightningModule):
         lambda_clash: float = 0.1,
         clash_cutoff: float = 2.0,
         coord_scale: float = 10.0,
+        mse_weight_min: float = 1.0,
+        mse_weight_peak: float = 50.0,
+        mse_weight_steepness: float = 3.0,
+        mse_weight_rise_center: float = 1.0,
+        mse_weight_fall_center: float = 5.0,
+        direction_mask_threshold: float = 0.5,
+        lambda_cos: float = 1.0,
+        lambda_mag: float = 1.0,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -36,14 +44,18 @@ class EvoPointLitModule(pl.LightningModule):
         delta_pred = self.forward(batch)
         target_norm = batch.y / self.coord_scale
         target_mag_real = torch.norm(batch.y, dim=-1)
-        w_min, w_peak = 1.0, 50.0
-        steepness = 3.0
-        rise = torch.sigmoid(steepness * (target_mag_real - 1.0))
-        fall = 1.0 - torch.sigmoid(steepness * (target_mag_real - 5.0))
+        rise = torch.sigmoid(
+            self.hparams.mse_weight_steepness * (target_mag_real - self.hparams.mse_weight_rise_center)
+        )
+        fall = 1.0 - torch.sigmoid(
+            self.hparams.mse_weight_steepness * (target_mag_real - self.hparams.mse_weight_fall_center)
+        )
+        w_min = self.hparams.mse_weight_min
+        w_peak = self.hparams.mse_weight_peak
         mse_weights = w_min + w_peak * rise * fall
         loss_node_mse = F.mse_loss(delta_pred, target_norm, reduction='none').mean(dim=-1)
         loss_mse = (loss_node_mse * mse_weights).mean()
-        direction_mask = target_mag_real > 0.5  
+        direction_mask = target_mag_real > self.hparams.direction_mask_threshold
         
         if direction_mask.sum() > 0:
             cos_sim = F.cosine_similarity(delta_pred[direction_mask], target_norm[direction_mask], dim=-1, eps=1e-6)
@@ -59,7 +71,12 @@ class EvoPointLitModule(pl.LightningModule):
         pos_pred = batch.pos + delta_pred_real
         loss_clash = self._clash_penalty(pos_pred, batch.edge_index)
         
-        loss = loss_mse + 1.0 * loss_cos + 1.0 * loss_mag + self.hparams.lambda_clash * loss_clash
+        loss = (
+            loss_mse
+            + self.hparams.lambda_cos * loss_cos
+            + self.hparams.lambda_mag * loss_mag
+            + self.hparams.lambda_clash * loss_clash
+        )
         
         batch_size = getattr(batch, "num_graphs", None)
         if batch_size is None and hasattr(batch, "ptr"):
