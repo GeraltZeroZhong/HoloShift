@@ -20,6 +20,10 @@ class EvoPointLitModule(pl.LightningModule):
         mse_weight_steepness: float = 3.0,
         mse_weight_rise_center: float = 1.0,
         mse_weight_fall_center: float = 5.0,
+        mse_hard_gamma: float = 1.5,
+        plddt_weight_alpha: float = 1.0,
+        plddt_weight_sigma: float = 5.0,
+        node_mse_cap: float = 2.0,
         direction_mask_threshold: float = 0.5,
         lambda_cos: float = 1.0,
         lambda_mag: float = 1.0,
@@ -53,7 +57,24 @@ class EvoPointLitModule(pl.LightningModule):
         w_min = self.hparams.mse_weight_min
         w_peak = self.hparams.mse_weight_peak
         mse_weights = w_min + w_peak * rise * fall
+
+        in_1_5 = (target_mag_real >= 1.0) & (target_mag_real <= 5.0)
+        w_hard = torch.ones_like(target_mag_real)
+        w_hard[in_1_5] = target_mag_real[in_1_5] ** self.hparams.mse_hard_gamma
+        mse_weights = mse_weights * w_hard
+
+        if hasattr(batch, "plddt") and batch.plddt is not None:
+            plddt = batch.plddt
+            if plddt.dim() > 1:
+                plddt = plddt.squeeze(-1)
+            plddt_centered = plddt - 60.0
+            w_plddt = 1.0 + self.hparams.plddt_weight_alpha * torch.exp(
+                -(plddt_centered ** 2) / (2 * (self.hparams.plddt_weight_sigma ** 2))
+            )
+            mse_weights = mse_weights * w_plddt
+
         loss_node_mse = F.mse_loss(delta_pred, target_norm, reduction='none').mean(dim=-1)
+        loss_node_mse = loss_node_mse.clamp(max=self.hparams.node_mse_cap)
         loss_mse = (loss_node_mse * mse_weights).mean()
         direction_mask = target_mag_real > self.hparams.direction_mask_threshold
         
