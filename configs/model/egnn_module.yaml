@@ -7,3 +7,12 @@ lr: 1e-4
 weight_decay: 1e-4
 lambda_clash: 0.1
 clash_cutoff: 2.0
+coord_scale: 10.0
+mse_weight_min: 1.0
+mse_weight_peak: 50.0
+mse_weight_steepness: 3.0
+mse_weight_rise_center: 1.0
+mse_weight_fall_center: 5.0
+direction_mask_threshold: 0.5
+lambda_cos: 1.0
+lambda_mag: 1.0
