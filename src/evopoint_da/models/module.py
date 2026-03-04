@@ -31,7 +31,7 @@ class EvoPointLitModule(pl.LightningModule):
         src, dst = edge_index
         dist = torch.norm(pos_pred[src] - pos_pred[dst], dim=-1)
         return F.relu(self.hparams.clash_cutoff - dist).mean()
-
+    '''
     def _shared_step(self, batch, stage: str):
         delta_pred = self.forward(batch)
         target_norm = batch.y / self.coord_scale
@@ -53,6 +53,44 @@ class EvoPointLitModule(pl.LightningModule):
             batch_size = batch.ptr.numel() - 1
 
         self.log(f"{stage}/loss", loss, prog_bar=(stage != "train"), batch_size=batch_size)
+        mse_real = F.mse_loss(delta_pred_real, batch.y)
+        self.log(f"{stage}/loss_mse", mse_real, batch_size=batch_size)
+        self.log(f"{stage}/pred_magnitude", torch.norm(delta_pred_real, dim=-1).mean(), batch_size=batch_size)
+    
+        return loss
+        '''
+    def _shared_step(self, batch, stage: str):
+        delta_pred = self.forward(batch)
+        target_norm = batch.y / self.coord_scale
+        target_mag_real = torch.norm(batch.y, dim=-1)
+        weights = torch.ones_like(target_mag_real)
+        weights[target_mag_real >= 1.0] = 50.0
+        loss_node_mse = F.mse_loss(delta_pred, target_norm, reduction='none').mean(dim=-1)
+        loss_mse = (loss_node_mse * weights).mean()
+        pred_mag = torch.norm(delta_pred, dim=-1)
+        target_mag = torch.norm(target_norm, dim=-1)
+        loss_mag = F.mse_loss(pred_mag, target_mag)
+        cos_mask = target_mag_real > 0.1
+        if cos_mask.sum() > 0:
+            cos_sim = F.cosine_similarity(delta_pred[cos_mask], target_norm[cos_mask], dim=-1, eps=1e-6)
+            loss_cos = 1.0 - cos_sim.mean()
+        else:
+            loss_cos = torch.tensor(0.0, device=self.device, dtype=delta_pred.dtype)
+
+        delta_pred_real = delta_pred * self.coord_scale
+        pos_pred = batch.pos + delta_pred_real
+        loss_clash = self._clash_penalty(pos_pred, batch.edge_index)
+
+
+        loss = loss_mse + 0.1 * loss_mag + 0.1 * loss_cos + self.hparams.lambda_clash * loss_clash
+        
+
+        batch_size = getattr(batch, "num_graphs", None)
+        if batch_size is None and hasattr(batch, "ptr"):
+            batch_size = batch.ptr.numel() - 1
+
+        self.log(f"{stage}/loss", loss, prog_bar=(stage != "train"), batch_size=batch_size)
+        
         mse_real = F.mse_loss(delta_pred_real, batch.y)
         self.log(f"{stage}/loss_mse", mse_real, batch_size=batch_size)
         self.log(f"{stage}/pred_magnitude", torch.norm(delta_pred_real, dim=-1).mean(), batch_size=batch_size)
