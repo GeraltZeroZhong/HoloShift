@@ -45,9 +45,18 @@ class EvoPointLitModule(pl.LightningModule):
     def on_test_epoch_start(self):
         self._test_disp_agg = {}
 
-    def _accumulate_disp_bin(self, suffix: str, sq_error: torch.Tensor, mask: torch.Tensor):
+    def _accumulate_disp_bin(
+        self,
+        suffix: str,
+        sq_error: torch.Tensor,
+        baseline_sq_error: torch.Tensor,
+        mask: torch.Tensor,
+    ):
         n_elem = int(mask.sum().item()) * sq_error.size(-1)
         sse_sum = sq_error[mask].sum() if n_elem > 0 else torch.zeros((), device=self.device, dtype=sq_error.dtype)
+        baseline_sse_sum = (
+            baseline_sq_error[mask].sum() if n_elem > 0 else torch.zeros((), device=self.device, dtype=sq_error.dtype)
+        )
 
         self.log(
             f"test/disp_{suffix}_sse_sum",
@@ -69,10 +78,14 @@ class EvoPointLitModule(pl.LightningModule):
         if suffix not in self._test_disp_agg:
             self._test_disp_agg[suffix] = {
                 "sse_sum": torch.zeros((), device=self.device, dtype=sq_error.dtype),
+                "baseline_sse_sum": torch.zeros((), device=self.device, dtype=sq_error.dtype),
                 "n_elem": 0,
             }
 
         self._test_disp_agg[suffix]["sse_sum"] = self._test_disp_agg[suffix]["sse_sum"] + sse_sum.detach()
+        self._test_disp_agg[suffix]["baseline_sse_sum"] = (
+            self._test_disp_agg[suffix]["baseline_sse_sum"] + baseline_sse_sum.detach()
+        )
         self._test_disp_agg[suffix]["n_elem"] += n_elem
 
     def on_test_epoch_end(self):
@@ -80,25 +93,33 @@ class EvoPointLitModule(pl.LightningModule):
             if agg["n_elem"] <= 0:
                 continue
             mse = agg["sse_sum"] / agg["n_elem"]
+            baseline_mse = agg["baseline_sse_sum"] / agg["n_elem"]
             self.log(f"test/disp_{suffix}_mse", mse)
             self.log(f"test/disp_{suffix}_rmsd", torch.sqrt(mse))
+            self.log(f"test/baseline_disp_{suffix}_mse", baseline_mse)
+            self.log(f"test/baseline_disp_{suffix}_rmsd", torch.sqrt(baseline_mse))
 
         # Aggregated displacement bin: [0.5, 5.0)
         agg_suffixes = ["0p5to1", "1to2", "2to3", "3to4", "4to5"]
         agg_sse_sum = None
+        agg_baseline_sse_sum = None
         agg_n_elem = 0
         for suffix in agg_suffixes:
             if suffix not in self._test_disp_agg:
                 continue
             if agg_sse_sum is None:
                 agg_sse_sum = self._test_disp_agg[suffix]["sse_sum"]
+                agg_baseline_sse_sum = self._test_disp_agg[suffix]["baseline_sse_sum"]
             else:
                 agg_sse_sum = agg_sse_sum + self._test_disp_agg[suffix]["sse_sum"]
+                agg_baseline_sse_sum = agg_baseline_sse_sum + self._test_disp_agg[suffix]["baseline_sse_sum"]
             agg_n_elem += self._test_disp_agg[suffix]["n_elem"]
 
         if agg_n_elem > 0:
             disp_0p5to5_mse = agg_sse_sum / agg_n_elem
+            baseline_disp_0p5to5_mse = agg_baseline_sse_sum / agg_n_elem
             self.log("test/disp_0p5to5_mse", disp_0p5to5_mse)
+            self.log("test/baseline_disp_0p5to5_mse", baseline_disp_0p5to5_mse)
 
     def forward(self, batch):
         _, pos_updated = self.backbone(batch.x, batch.pos, batch.edge_index, batch.edge_attr)
@@ -214,6 +235,8 @@ class EvoPointLitModule(pl.LightningModule):
         self.log("test/loss_clash", loss_clash)
 
         baseline_delta = torch.zeros_like(batch.y)
+        baseline_sq_error = baseline_delta - batch.y
+        baseline_sq_error = baseline_sq_error ** 2
         self.log("test/baseline_mse", F.mse_loss(baseline_delta, batch.y))
         self.log("test/pred_magnitude", torch.norm(delta_pred_real, dim=-1).mean())
 
@@ -247,7 +270,7 @@ class EvoPointLitModule(pl.LightningModule):
                 reduce_fx=torch.sum,
                 batch_size=1,
             )
-            self._accumulate_disp_bin(suffix, sq_error, disp_mask)
+            self._accumulate_disp_bin(suffix, sq_error, baseline_sq_error, disp_mask)
 
         disp_mask_gt5 = gt_disp_mag >= 5.0
         count_gt5 = int(disp_mask_gt5.sum().item())
@@ -259,7 +282,7 @@ class EvoPointLitModule(pl.LightningModule):
             reduce_fx=torch.sum,
             batch_size=1,
         )
-        self._accumulate_disp_bin("gt5", sq_error, disp_mask_gt5)
+        self._accumulate_disp_bin("gt5", sq_error, baseline_sq_error, disp_mask_gt5)
 
         # pLDDT-binned metrics (raw pLDDT scale: 0~100)
         if hasattr(batch, "plddt") and batch.plddt is not None:
@@ -267,29 +290,10 @@ class EvoPointLitModule(pl.LightningModule):
             if plddt.dim() > 1:
                 plddt = plddt.squeeze(-1)
 
-            plddt_low_cutoff = self.hparams.plddt_low_cutoff
-            plddt_mid_cutoff = self.hparams.plddt_mid_cutoff
-            plddt_max = self.hparams.plddt_max
-            plddt_bin_size = int(self.hparams.plddt_bin_size)
-
-            plddt_bins = {
-                "le50": plddt <= plddt_low_cutoff,
-                "50to70": (plddt > plddt_low_cutoff) & (plddt <= plddt_mid_cutoff),
-                "gt70": plddt > plddt_mid_cutoff,
-            }
-            for suffix, mask in plddt_bins.items():
-                if mask.any():
-                    bin_mse = F.mse_loss(delta_pred_real[mask], batch.y[mask])
-                    baseline_bin_mse = F.mse_loss(baseline_delta[mask], batch.y[mask])
-                    self.log(f"test/plddt_{suffix}_mse", bin_mse)
-                    self.log(f"test/plddt_{suffix}_rmsd", torch.sqrt(bin_mse))
-                    self.log(f"test/baseline_plddt_{suffix}_mse", baseline_bin_mse)
-                    self.log(f"test/baseline_plddt_{suffix}_rmsd", torch.sqrt(baseline_bin_mse))
-
-            # Fine-grained pLDDT bins: [0,10), [10,20), ..., [90,100]
-            for lower in range(0, int(plddt_max), plddt_bin_size):
-                upper = lower + plddt_bin_size
-                if upper < plddt_max:
+            # pLDDT bins: [0,60), [60,70), [70,80), [80,90), [90,100]
+            plddt_ranges = [(0, 60), (60, 70), (70, 80), (80, 90), (90, 100)]
+            for lower, upper in plddt_ranges:
+                if upper < 100:
                     plddt_mask = (plddt >= float(lower)) & (plddt < float(upper))
                 else:
                     plddt_mask = (plddt >= float(lower)) & (plddt <= float(upper))
@@ -305,8 +309,11 @@ class EvoPointLitModule(pl.LightningModule):
                 )
                 if count > 0:
                     bin_mse = F.mse_loss(delta_pred_real[plddt_mask], batch.y[plddt_mask])
+                    baseline_bin_mse = F.mse_loss(baseline_delta[plddt_mask], batch.y[plddt_mask])
                     self.log(f"test/plddt_{lower}to{upper}_mse", bin_mse)
                     self.log(f"test/plddt_{lower}to{upper}_rmsd", torch.sqrt(bin_mse))
+                    self.log(f"test/baseline_plddt_{lower}to{upper}_mse", baseline_bin_mse)
+                    self.log(f"test/baseline_plddt_{lower}to{upper}_rmsd", torch.sqrt(baseline_bin_mse))
 
         return loss
 
