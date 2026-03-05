@@ -83,6 +83,23 @@ class EvoPointLitModule(pl.LightningModule):
             self.log(f"test/disp_{suffix}_mse", mse)
             self.log(f"test/disp_{suffix}_rmsd", torch.sqrt(mse))
 
+        # Aggregated displacement bin: [0.5, 5.0)
+        agg_suffixes = ["0p5to1", "1to2", "2to3", "3to4", "4to5"]
+        agg_sse_sum = None
+        agg_n_elem = 0
+        for suffix in agg_suffixes:
+            if suffix not in self._test_disp_agg:
+                continue
+            if agg_sse_sum is None:
+                agg_sse_sum = self._test_disp_agg[suffix]["sse_sum"]
+            else:
+                agg_sse_sum = agg_sse_sum + self._test_disp_agg[suffix]["sse_sum"]
+            agg_n_elem += self._test_disp_agg[suffix]["n_elem"]
+
+        if agg_n_elem > 0:
+            disp_0p5to5_mse = agg_sse_sum / agg_n_elem
+            self.log("test/disp_0p5to5_mse", disp_0p5to5_mse)
+
     def forward(self, batch):
         _, pos_updated = self.backbone(batch.x, batch.pos, batch.edge_index, batch.edge_attr)
         return pos_updated - batch.pos
@@ -161,11 +178,17 @@ class EvoPointLitModule(pl.LightningModule):
 
         gt_disp_mag = torch.norm(batch.y, dim=-1)
         flexible_mask = gt_disp_mag > self.hparams.flexible_threshold
+        flex_count = int(flexible_mask.sum().item())
         if flexible_mask.any():
             flex_mse = F.mse_loss(delta_pred_real[flexible_mask], batch.y[flexible_mask])
         else:
-            flex_mse = torch.full((), float("inf"), device=self.device, dtype=delta_pred_real.dtype)
+            flex_mse = torch.zeros((), device=self.device, dtype=delta_pred_real.dtype)
         self.log(f"{stage}/flexible_mse", flex_mse, batch_size=batch_size)
+        self.log(
+            f"{stage}/flexible_count",
+            torch.tensor(float(flex_count), device=self.device),
+            batch_size=batch_size,
+        )
     
         return loss
     
