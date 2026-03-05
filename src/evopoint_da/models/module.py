@@ -27,6 +27,8 @@ class EvoPointLitModule(pl.LightningModule):
         plddt_weight_power: float = 1.0,
         plddt_weight_high: float = 0.5,
         plddt_weight_low: float = 0.2,
+        plddt_weight_mid: float = 2.0,
+        plddt_weight_ramp: float = 5.0,
         node_mse_cap: float = 2.0,
         direction_mask_threshold: float = 0.5,
         lambda_cos: float = 1.0,
@@ -73,16 +75,20 @@ class EvoPointLitModule(pl.LightningModule):
             if plddt.dim() > 1:
                 plddt = plddt.squeeze(-1)
 
-            in_50_70 = (plddt > 50.0) & (plddt <= 70.0)
-            t = (plddt.clamp(50.0, 70.0) - 50.0) / 20.0
+            w_low = self.hparams.plddt_weight_low
+            w_high = self.hparams.plddt_weight_high
+            w_mid = self.hparams.plddt_weight_mid
+            ramp = self.hparams.plddt_weight_ramp
 
-            w_plddt = torch.ones_like(plddt)
-            shape = 4.0 * t * (1.0 - t)
-            w_plddt[in_50_70] = 1.0 + self.hparams.plddt_weight_beta * (
-                shape[in_50_70] ** self.hparams.plddt_weight_power
-            )
-            w_plddt[plddt > 70.0] = self.hparams.plddt_weight_high
-            w_plddt[plddt <= 50.0] = self.hparams.plddt_weight_low
+            w_plddt = torch.full_like(plddt, w_high)
+            w_plddt[plddt <= 50.0] = w_low
+
+            in_50_70 = (plddt > 50.0) & (plddt <= 70.0)
+            pp = plddt.clamp(50.0, 70.0)
+            ramp_up = ((pp - 50.0) / ramp).clamp(0.0, 1.0)
+            ramp_down = ((70.0 - pp) / ramp).clamp(0.0, 1.0)
+            plateau = torch.minimum(ramp_up, ramp_down)
+            w_plddt[in_50_70] = w_high + (w_mid - w_high) * plateau[in_50_70]
 
             mse_weights = mse_weights * w_plddt
 
@@ -169,13 +175,20 @@ class EvoPointLitModule(pl.LightningModule):
             self.log("test/baseline_flexible_mse", baseline_flex_mse)
             self.log("test/baseline_flexible_rmsd", torch.sqrt(baseline_flex_mse))
 
-        # Fine-grained displacement bins: [0,1), [1,2), ..., [9,10), [10,+inf)
-        for lower in range(10):
-            upper = lower + 1
-            disp_mask = (gt_disp_mag >= float(lower)) & (gt_disp_mag < float(upper))
+        # Fine-grained displacement bins: [0,0.5), [0.5,1), [1,2), [2,3), [3,4), [4,5), [5,+inf)
+        disp_bins = [
+            (0.0, 0.5, "0to0p5"),
+            (0.5, 1.0, "0p5to1"),
+            (1.0, 2.0, "1to2"),
+            (2.0, 3.0, "2to3"),
+            (3.0, 4.0, "3to4"),
+            (4.0, 5.0, "4to5"),
+        ]
+        for lower, upper, suffix in disp_bins:
+            disp_mask = (gt_disp_mag >= lower) & (gt_disp_mag < upper)
             count = int(disp_mask.sum().item())
             self.log(
-                f"test/disp_{lower}to{upper}_count",
+                f"test/disp_{suffix}_count",
                 torch.tensor(float(count), device=self.device),
                 on_step=False,
                 on_epoch=True,
@@ -184,23 +197,23 @@ class EvoPointLitModule(pl.LightningModule):
             )
             if count > 0:
                 bin_mse = F.mse_loss(delta_pred_real[disp_mask], batch.y[disp_mask])
-                self.log(f"test/disp_{lower}to{upper}_mse", bin_mse)
-                self.log(f"test/disp_{lower}to{upper}_rmsd", torch.sqrt(bin_mse))
+                self.log(f"test/disp_{suffix}_mse", bin_mse)
+                self.log(f"test/disp_{suffix}_rmsd", torch.sqrt(bin_mse))
 
-        disp_mask_gt10 = gt_disp_mag >= 10.0
-        count_gt10 = int(disp_mask_gt10.sum().item())
+        disp_mask_gt5 = gt_disp_mag >= 5.0
+        count_gt5 = int(disp_mask_gt5.sum().item())
         self.log(
-            "test/disp_gt10_count",
-            torch.tensor(float(count_gt10), device=self.device),
+            "test/disp_gt5_count",
+            torch.tensor(float(count_gt5), device=self.device),
             on_step=False,
             on_epoch=True,
             reduce_fx=torch.sum,
             batch_size=1,
         )
-        if count_gt10 > 0:
-            disp_gt10_mse = F.mse_loss(delta_pred_real[disp_mask_gt10], batch.y[disp_mask_gt10])
-            self.log("test/disp_gt10_mse", disp_gt10_mse)
-            self.log("test/disp_gt10_rmsd", torch.sqrt(disp_gt10_mse))
+        if count_gt5 > 0:
+            disp_gt5_mse = F.mse_loss(delta_pred_real[disp_mask_gt5], batch.y[disp_mask_gt5])
+            self.log("test/disp_gt5_mse", disp_gt5_mse)
+            self.log("test/disp_gt5_rmsd", torch.sqrt(disp_gt5_mse))
 
         # pLDDT-binned metrics (raw pLDDT scale: 0~100)
         if hasattr(batch, "plddt") and batch.plddt is not None:
