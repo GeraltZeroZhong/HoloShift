@@ -38,6 +38,48 @@ class EvoPointLitModule(pl.LightningModule):
         self.save_hyperparameters()
         self.backbone = EGNNBackbone(in_channels=in_channels, hidden_dim=hidden_dim, num_layers=num_layers, edge_dim=edge_dim)
         self.coord_scale = coord_scale
+        self._test_disp_agg = {}
+
+    def on_test_epoch_start(self):
+        self._test_disp_agg = {}
+
+    def _accumulate_disp_bin(self, suffix: str, sq_error: torch.Tensor, mask: torch.Tensor):
+        n_elem = int(mask.sum().item()) * sq_error.size(-1)
+        sse_sum = sq_error[mask].sum() if n_elem > 0 else torch.zeros((), device=self.device, dtype=sq_error.dtype)
+
+        self.log(
+            f"test/disp_{suffix}_sse_sum",
+            sse_sum,
+            on_step=False,
+            on_epoch=True,
+            reduce_fx=torch.sum,
+            batch_size=1,
+        )
+        self.log(
+            f"test/disp_{suffix}_n_elem",
+            torch.tensor(float(n_elem), device=self.device),
+            on_step=False,
+            on_epoch=True,
+            reduce_fx=torch.sum,
+            batch_size=1,
+        )
+
+        if suffix not in self._test_disp_agg:
+            self._test_disp_agg[suffix] = {
+                "sse_sum": torch.zeros((), device=self.device, dtype=sq_error.dtype),
+                "n_elem": 0,
+            }
+
+        self._test_disp_agg[suffix]["sse_sum"] = self._test_disp_agg[suffix]["sse_sum"] + sse_sum.detach()
+        self._test_disp_agg[suffix]["n_elem"] += n_elem
+
+    def on_test_epoch_end(self):
+        for suffix, agg in self._test_disp_agg.items():
+            if agg["n_elem"] <= 0:
+                continue
+            mse = agg["sse_sum"] / agg["n_elem"]
+            self.log(f"test/disp_{suffix}_mse", mse)
+            self.log(f"test/disp_{suffix}_rmsd", torch.sqrt(mse))
 
     def forward(self, batch):
         _, pos_updated = self.backbone(batch.x, batch.pos, batch.edge_index, batch.edge_attr)
@@ -150,6 +192,7 @@ class EvoPointLitModule(pl.LightningModule):
     def test_step(self, batch, batch_idx):
         delta_pred = self.forward(batch)
         delta_pred_real = delta_pred * self.coord_scale
+        sq_error = (delta_pred_real - batch.y) ** 2
 
         loss_mse_real = F.mse_loss(delta_pred_real, batch.y)
         pos_pred = batch.pos + delta_pred_real
@@ -195,10 +238,7 @@ class EvoPointLitModule(pl.LightningModule):
                 reduce_fx=torch.sum,
                 batch_size=1,
             )
-            if count > 0:
-                bin_mse = F.mse_loss(delta_pred_real[disp_mask], batch.y[disp_mask])
-                self.log(f"test/disp_{suffix}_mse", bin_mse)
-                self.log(f"test/disp_{suffix}_rmsd", torch.sqrt(bin_mse))
+            self._accumulate_disp_bin(suffix, sq_error, disp_mask)
 
         disp_mask_gt5 = gt_disp_mag >= 5.0
         count_gt5 = int(disp_mask_gt5.sum().item())
@@ -210,10 +250,7 @@ class EvoPointLitModule(pl.LightningModule):
             reduce_fx=torch.sum,
             batch_size=1,
         )
-        if count_gt5 > 0:
-            disp_gt5_mse = F.mse_loss(delta_pred_real[disp_mask_gt5], batch.y[disp_mask_gt5])
-            self.log("test/disp_gt5_mse", disp_gt5_mse)
-            self.log("test/disp_gt5_rmsd", torch.sqrt(disp_gt5_mse))
+        self._accumulate_disp_bin("gt5", sq_error, disp_mask_gt5)
 
         # pLDDT-binned metrics (raw pLDDT scale: 0~100)
         if hasattr(batch, "plddt") and batch.plddt is not None:
