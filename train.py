@@ -29,8 +29,8 @@ def main(cfg: DictConfig):
     callbacks = [
         ModelCheckpoint(
             dirpath=ckpt_dir,
-            filename="best-{epoch:02d}-{val/loss:.4f}",
-            monitor="val/loss",
+            filename="best-{epoch:02d}-{val/flexible_mse:.4f}",
+            monitor="val/flexible_mse",
             mode="min",
             save_top_k=1,
             save_last=True,
