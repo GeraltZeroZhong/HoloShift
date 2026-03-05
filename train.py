@@ -29,11 +29,20 @@ def main(cfg: DictConfig):
     callbacks = [
         ModelCheckpoint(
             dirpath=ckpt_dir,
-            filename="best-{epoch:02d}-{val/flexible_mse:.4f}",
+            filename="best-flex-{epoch:02d}-{val/flexible_mse:.4f}",
             monitor="val/flexible_mse",
             mode="min",
             save_top_k=1,
             save_last=True,
+            auto_insert_metric_name=False,
+        ),
+        ModelCheckpoint(
+            dirpath=ckpt_dir,
+            filename="best-disp1to5-{epoch:02d}-{val/disp_1to5_mse:.4f}",
+            monitor="val/disp_1to5_mse",
+            mode="min",
+            save_top_k=1,
+            save_last=False,
             auto_insert_metric_name=False,
         ),
         RichProgressBar(),
