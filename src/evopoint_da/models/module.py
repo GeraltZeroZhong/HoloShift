@@ -35,6 +35,9 @@ class EvoPointLitModule(pl.LightningModule):
         plddt_max: float = 100.0,
         lambda_cos: float = 0.5,
         lambda_mag: float = 1.0,
+        plddt_gate_start: float = 90.0,
+        plddt_gate_end: float = 100.0,
+        lambda_high_plddt_l2: float = 0.1,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -66,14 +69,6 @@ class EvoPointLitModule(pl.LightningModule):
             reduce_fx=torch.sum,
             batch_size=1,
         )
-        self.log(
-            f"test/disp_{suffix}_n_elem",
-            torch.tensor(float(n_elem), device=self.device),
-            on_step=False,
-            on_epoch=True,
-            reduce_fx=torch.sum,
-            batch_size=1,
-        )
 
         if suffix not in self._test_disp_agg:
             self._test_disp_agg[suffix] = {
@@ -99,8 +94,8 @@ class EvoPointLitModule(pl.LightningModule):
             self.log(f"test/baseline_disp_{suffix}_mse", baseline_mse)
             self.log(f"test/baseline_disp_{suffix}_rmsd", torch.sqrt(baseline_mse))
 
-        # Aggregated displacement bin: [0.5, 5.0)
-        agg_suffixes = ["0p5to1", "1to2", "2to3", "3to4", "4to5"]
+        # Aggregated displacement bin: [1.0, 5.0)
+        agg_suffixes = ["1to2", "2to3", "3to4", "4to5"]
         agg_sse_sum = None
         agg_baseline_sse_sum = None
         agg_n_elem = 0
@@ -116,10 +111,10 @@ class EvoPointLitModule(pl.LightningModule):
             agg_n_elem += self._test_disp_agg[suffix]["n_elem"]
 
         if agg_n_elem > 0:
-            disp_0p5to5_mse = agg_sse_sum / agg_n_elem
-            baseline_disp_0p5to5_mse = agg_baseline_sse_sum / agg_n_elem
-            self.log("test/disp_0p5to5_mse", disp_0p5to5_mse)
-            self.log("test/baseline_disp_0p5to5_mse", baseline_disp_0p5to5_mse)
+            disp_1to5_mse = agg_sse_sum / agg_n_elem
+            baseline_disp_1to5_mse = agg_baseline_sse_sum / agg_n_elem
+            self.log("test/disp_1to5_mse", disp_1to5_mse)
+            self.log("test/baseline_disp_1to5_mse", baseline_disp_1to5_mse)
 
     def forward(self, batch):
         _, pos_updated = self.backbone(batch.x, batch.pos, batch.edge_index, batch.edge_attr)
@@ -134,6 +129,22 @@ class EvoPointLitModule(pl.LightningModule):
 
     def _shared_step(self, batch, stage: str):
         delta_pred = self.forward(batch)
+        high_plddt_l2 = torch.zeros((), device=self.device, dtype=delta_pred.dtype)
+
+        if hasattr(batch, "plddt") and batch.plddt is not None:
+            plddt = batch.plddt
+            if plddt.dim() > 1:
+                plddt = plddt.squeeze(-1)
+
+            gate_start = self.hparams.plddt_gate_start
+            gate_end = max(self.hparams.plddt_gate_end, gate_start + 1e-6)
+            uncertainty_gate = ((gate_end - plddt) / (gate_end - gate_start)).clamp(0.0, 1.0)
+            delta_pred = delta_pred * uncertainty_gate.unsqueeze(-1)
+
+            high_plddt_mask = plddt > gate_start
+            if high_plddt_mask.any():
+                high_plddt_l2 = (delta_pred[high_plddt_mask] ** 2).mean()
+
         target_norm = batch.y / self.coord_scale
         target_mag_real = torch.norm(batch.y, dim=-1)
         rise = torch.sigmoid(
@@ -185,6 +196,7 @@ class EvoPointLitModule(pl.LightningModule):
             + self.hparams.lambda_cos * loss_cos
             + self.hparams.lambda_mag * loss_mag
             + self.hparams.lambda_clash * loss_clash
+            + self.hparams.lambda_high_plddt_l2 * high_plddt_l2
         )
         
         batch_size = getattr(batch, "num_graphs", None)
@@ -193,6 +205,7 @@ class EvoPointLitModule(pl.LightningModule):
 
         self.log(f"{stage}/loss", loss, prog_bar=(stage != "train"), batch_size=batch_size)
         self.log(f"{stage}/loss_cos", loss_cos, batch_size=batch_size) 
+        self.log(f"{stage}/loss_high_plddt_l2", high_plddt_l2, batch_size=batch_size)
         mse_real = F.mse_loss(delta_pred_real, batch.y)
         self.log(f"{stage}/loss_mse", mse_real, batch_size=batch_size)
         self.log(f"{stage}/pred_magnitude", torch.norm(delta_pred_real, dim=-1).mean(), batch_size=batch_size)
