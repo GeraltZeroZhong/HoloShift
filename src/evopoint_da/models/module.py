@@ -211,6 +211,19 @@ class EvoPointLitModule(pl.LightningModule):
         self.log(f"{stage}/pred_magnitude", torch.norm(delta_pred_real, dim=-1).mean(), batch_size=batch_size)
 
         gt_disp_mag = torch.norm(batch.y, dim=-1)
+        if stage == "val":
+            disp_1to5_mask = (gt_disp_mag >= 1.0) & (gt_disp_mag < 5.0)
+            if disp_1to5_mask.any():
+                disp_1to5_mse = F.mse_loss(delta_pred_real[disp_1to5_mask], batch.y[disp_1to5_mask])
+                self.log(
+                    "val/disp_1to5_mse",
+                    disp_1to5_mse,
+                    on_step=False,
+                    on_epoch=True,
+                    prog_bar=True,
+                    batch_size=int(disp_1to5_mask.sum().item()),
+                )
+
         flexible_mask = gt_disp_mag > self.hparams.flexible_threshold
         flex_count = int(flexible_mask.sum().item())
         if flexible_mask.any():
