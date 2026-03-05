@@ -23,8 +23,10 @@ class EvoPointLitModule(pl.LightningModule):
         mse_hard_gamma: float = 1.5,
         mse_hard_beta: float = 3.0,
         mse_hard_p: float = 1.5,
-        plddt_weight_alpha: float = 1.0,
-        plddt_weight_sigma: float = 5.0,
+        plddt_weight_beta: float = 1.0,
+        plddt_weight_power: float = 1.0,
+        plddt_weight_high: float = 0.5,
+        plddt_weight_low: float = 0.2,
         node_mse_cap: float = 2.0,
         direction_mask_threshold: float = 0.5,
         lambda_cos: float = 1.0,
@@ -70,10 +72,18 @@ class EvoPointLitModule(pl.LightningModule):
             plddt = batch.plddt
             if plddt.dim() > 1:
                 plddt = plddt.squeeze(-1)
-            plddt_centered = plddt - 60.0
-            w_plddt = 1.0 + self.hparams.plddt_weight_alpha * torch.exp(
-                -(plddt_centered ** 2) / (2 * (self.hparams.plddt_weight_sigma ** 2))
+
+            in_50_70 = (plddt > 50.0) & (plddt <= 70.0)
+            t = (plddt.clamp(50.0, 70.0) - 50.0) / 20.0
+
+            w_plddt = torch.ones_like(plddt)
+            shape = 4.0 * t * (1.0 - t)
+            w_plddt[in_50_70] = 1.0 + self.hparams.plddt_weight_beta * (
+                shape[in_50_70] ** self.hparams.plddt_weight_power
             )
+            w_plddt[plddt > 70.0] = self.hparams.plddt_weight_high
+            w_plddt[plddt <= 50.0] = self.hparams.plddt_weight_low
+
             mse_weights = mse_weights * w_plddt
 
         eps = 1e-8
