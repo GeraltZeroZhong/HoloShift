@@ -10,7 +10,7 @@ class EvoPointLitModule(pl.LightningModule):
         hidden_dim: int = 128,
         num_layers: int = 4,
         edge_dim: int = 2,
-        lr: float = 1e-3, 
+        lr: float = 1e-4, 
         weight_decay: float = 1e-5,
         lambda_clash: float = 0.1,
         clash_cutoff: float = 2.0,
@@ -18,7 +18,7 @@ class EvoPointLitModule(pl.LightningModule):
         mse_weight_min: float = 1.0,
         mse_weight_peak: float = 50.0,
         mse_weight_steepness: float = 3.0,
-        mse_weight_rise_center: float = 1.0,
+        mse_weight_rise_center: float = 0.5,
         mse_weight_fall_center: float = 5.0,
         mse_hard_gamma: float = 1.5,
         mse_hard_beta: float = 3.0,
@@ -33,7 +33,7 @@ class EvoPointLitModule(pl.LightningModule):
         plddt_mid_cutoff: float = 70.0,
         plddt_bin_size: int = 10,
         plddt_max: float = 100.0,
-        lambda_cos: float = 1.0,
+        lambda_cos: float = 0.5,
         lambda_mag: float = 1.0,
     ):
         super().__init__()
