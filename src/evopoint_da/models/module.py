@@ -23,14 +23,16 @@ class EvoPointLitModule(pl.LightningModule):
         mse_hard_gamma: float = 1.5,
         mse_hard_beta: float = 3.0,
         mse_hard_p: float = 1.5,
-        plddt_weight_beta: float = 1.0,
-        plddt_weight_power: float = 1.0,
-        plddt_weight_high: float = 0.5,
-        plddt_weight_low: float = 0.2,
-        plddt_weight_mid: float = 2.0,
-        plddt_weight_ramp: float = 5.0,
         node_mse_cap: float = 2.0,
         direction_mask_threshold: float = 0.5,
+        direction_mask_upper: float = 5.0,
+        mse_hard_range_min: float = 1.0,
+        mse_hard_range_max: float = 5.0,
+        flexible_threshold: float = 1.0,
+        plddt_low_cutoff: float = 50.0,
+        plddt_mid_cutoff: float = 70.0,
+        plddt_bin_size: int = 10,
+        plddt_max: float = 100.0,
         lambda_cos: float = 1.0,
         lambda_mag: float = 1.0,
     ):
@@ -106,40 +108,24 @@ class EvoPointLitModule(pl.LightningModule):
         w_peak = self.hparams.mse_weight_peak
         mse_weights = w_min + w_peak * rise * fall
 
-        in_1_5 = (target_mag_real >= 1.0) & (target_mag_real <= 5.0)
-        t = (target_mag_real.clamp(1.0, 5.0) - 1.0) / 4.0
+        hard_min = self.hparams.mse_hard_range_min
+        hard_max = self.hparams.mse_hard_range_max
+        in_hard_range = (target_mag_real >= hard_min) & (target_mag_real <= hard_max)
+        hard_span = max(hard_max - hard_min, 1e-8)
+        t = (target_mag_real.clamp(hard_min, hard_max) - hard_min) / hard_span
         w_hard = torch.ones_like(target_mag_real)
-        w_hard[in_1_5] = 1.0 + self.hparams.mse_hard_beta * (t[in_1_5] ** self.hparams.mse_hard_p)
+        w_hard[in_hard_range] = 1.0 + self.hparams.mse_hard_beta * (t[in_hard_range] ** self.hparams.mse_hard_p)
         mse_weights = mse_weights * w_hard
-
-        if hasattr(batch, "plddt") and batch.plddt is not None:
-            plddt = batch.plddt
-            if plddt.dim() > 1:
-                plddt = plddt.squeeze(-1)
-
-            w_low = self.hparams.plddt_weight_low
-            w_high = self.hparams.plddt_weight_high
-            w_mid = self.hparams.plddt_weight_mid
-            ramp = self.hparams.plddt_weight_ramp
-
-            w_plddt = torch.full_like(plddt, w_high)
-            w_plddt[plddt <= 50.0] = w_low
-
-            in_50_70 = (plddt > 50.0) & (plddt <= 70.0)
-            pp = plddt.clamp(50.0, 70.0)
-            ramp_up = ((pp - 50.0) / ramp).clamp(0.0, 1.0)
-            ramp_down = ((70.0 - pp) / ramp).clamp(0.0, 1.0)
-            plateau = torch.minimum(ramp_up, ramp_down)
-            w_plddt[in_50_70] = w_high + (w_mid - w_high) * plateau[in_50_70]
-
-            mse_weights = mse_weights * w_plddt
 
         eps = 1e-8
         mse_weights = mse_weights / (mse_weights.mean().detach() + eps)
 
         loss_node_mse = F.smooth_l1_loss(delta_pred, target_norm, reduction='none').mean(dim=-1)
         loss_mse = (loss_node_mse * mse_weights).mean()
-        mask_focus = (target_mag_real >= 0.5) & (target_mag_real <= 5.0)
+        mask_focus = (
+            (target_mag_real >= self.hparams.direction_mask_threshold)
+            & (target_mag_real <= self.hparams.direction_mask_upper)
+        )
         direction_mask = mask_focus
         
         if direction_mask.sum() > 0:
@@ -174,7 +160,7 @@ class EvoPointLitModule(pl.LightningModule):
         self.log(f"{stage}/pred_magnitude", torch.norm(delta_pred_real, dim=-1).mean(), batch_size=batch_size)
 
         gt_disp_mag = torch.norm(batch.y, dim=-1)
-        flexible_mask = gt_disp_mag > 1.0
+        flexible_mask = gt_disp_mag > self.hparams.flexible_threshold
         if flexible_mask.any():
             flex_mse = F.mse_loss(delta_pred_real[flexible_mask], batch.y[flexible_mask])
         else:
@@ -209,7 +195,7 @@ class EvoPointLitModule(pl.LightningModule):
         self.log("test/pred_magnitude", torch.norm(delta_pred_real, dim=-1).mean())
 
         gt_disp_mag = torch.norm(batch.y, dim=-1)
-        flexible_mask = gt_disp_mag > 1.0
+        flexible_mask = gt_disp_mag > self.hparams.flexible_threshold
         if flexible_mask.any():
             flex_mse = F.mse_loss(delta_pred_real[flexible_mask], batch.y[flexible_mask])
             baseline_flex_mse = F.mse_loss(baseline_delta[flexible_mask], batch.y[flexible_mask])
@@ -258,10 +244,15 @@ class EvoPointLitModule(pl.LightningModule):
             if plddt.dim() > 1:
                 plddt = plddt.squeeze(-1)
 
+            plddt_low_cutoff = self.hparams.plddt_low_cutoff
+            plddt_mid_cutoff = self.hparams.plddt_mid_cutoff
+            plddt_max = self.hparams.plddt_max
+            plddt_bin_size = int(self.hparams.plddt_bin_size)
+
             plddt_bins = {
-                "le50": plddt <= 50.0,
-                "50to70": (plddt > 50.0) & (plddt <= 70.0),
-                "gt70": plddt > 70.0,
+                "le50": plddt <= plddt_low_cutoff,
+                "50to70": (plddt > plddt_low_cutoff) & (plddt <= plddt_mid_cutoff),
+                "gt70": plddt > plddt_mid_cutoff,
             }
             for suffix, mask in plddt_bins.items():
                 if mask.any():
@@ -273,9 +264,9 @@ class EvoPointLitModule(pl.LightningModule):
                     self.log(f"test/baseline_plddt_{suffix}_rmsd", torch.sqrt(baseline_bin_mse))
 
             # Fine-grained pLDDT bins: [0,10), [10,20), ..., [90,100]
-            for lower in range(0, 100, 10):
-                upper = lower + 10
-                if upper < 100:
+            for lower in range(0, int(plddt_max), plddt_bin_size):
+                upper = lower + plddt_bin_size
+                if upper < plddt_max:
                     plddt_mask = (plddt >= float(lower)) & (plddt < float(upper))
                 else:
                     plddt_mask = (plddt >= float(lower)) & (plddt <= float(upper))
