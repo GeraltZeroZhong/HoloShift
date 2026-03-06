@@ -12,7 +12,6 @@ from __future__ import annotations
 import argparse
 import csv
 import re
-from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -265,38 +264,7 @@ def _hydra_output_dir_from_timestamp(repo_root: Path, timestamp: str) -> Optiona
     return None
 
 
-def _parse_compact_timestamp(timestamp: str) -> Optional[datetime]:
-    try:
-        return datetime.strptime(timestamp, "%Y%m%d-%H%M%S")
-    except ValueError:
-        return None
-
-
-def _nearby_hydra_output_dirs(repo_root: Path, timestamp: str, max_dirs: int = 6) -> List[Path]:
-    target = _parse_compact_timestamp(timestamp)
-    if target is None:
-        return []
-
-    day_dir = repo_root / "outputs" / target.strftime("%Y-%m-%d")
-    if not day_dir.exists() or not day_dir.is_dir():
-        return []
-
-    candidates: List[Tuple[float, Path]] = []
-    for sub in day_dir.iterdir():
-        if not sub.is_dir():
-            continue
-        try:
-            dt = datetime.strptime(f"{target.strftime('%Y-%m-%d')} {sub.name}", "%Y-%m-%d %H-%M-%S")
-        except ValueError:
-            continue
-        delta = abs((dt - target).total_seconds())
-        candidates.append((delta, sub))
-
-    candidates.sort(key=lambda x: x[0])
-    return [path for _, path in candidates[:max_dirs]]
-
-
-def collect_rows_from_logs(checkpoints_root: Path, strict: bool = False) -> List[Dict[str, float | str]]:
+def collect_rows_from_logs(checkpoints_root: Path) -> List[Dict[str, float | str]]:
     if not checkpoints_root.exists():
         raise FileNotFoundError(f"Checkpoints root does not exist: {checkpoints_root}")
 
@@ -314,20 +282,8 @@ def collect_rows_from_logs(checkpoints_root: Path, strict: bool = False) -> List
         hydra_dir = _hydra_output_dir_from_timestamp(repo_root, ts_dir.name)
         if hydra_dir is not None:
             search_roots.extend([hydra_dir, hydra_dir / "logs"])
-        for near in _nearby_hydra_output_dirs(repo_root, ts_dir.name):
-            search_roots.extend([near, near / "logs"])
-        search_roots.extend([repo_root / "logs", repo_root / "outputs"])
 
-        # Keep order while de-duplicating.
-        dedup_roots: List[Path] = []
-        seen_roots: set[Path] = set()
-        for root in search_roots:
-            if root in seen_roots:
-                continue
-            seen_roots.add(root)
-            dedup_roots.append(root)
-
-        log_files = _collect_candidate_logs(dedup_roots)
+        log_files = _collect_candidate_logs(search_roots)
         metrics = _extract_metrics_from_logs(log_files)
         params = dict(defaults.get(run_id, {}))
         params.update(_extract_params_from_logs(log_files))
@@ -338,14 +294,10 @@ def collect_rows_from_logs(checkpoints_root: Path, strict: bool = False) -> List
 
         missing = [c for c in RESULTS_COLUMNS if c not in row]
         if missing:
-            msg = (
+            raise ValueError(
                 f"Run {run_dir.name} is missing required columns: {missing}. "
-                f"Scanned roots: {', '.join(str(p) for p in dedup_roots)}"
+                f"Scanned roots: {', '.join(str(p) for p in search_roots)}"
             )
-            if strict:
-                raise ValueError(msg)
-            print(f"[WARN] Skipping run: {msg}")
-            continue
         rows.append(row)
 
     return rows
@@ -359,10 +311,10 @@ def write_results_csv(rows: List[Dict[str, float | str]], output: Path) -> None:
         writer.writerows(rows)
 
 
-def extract_results(checkpoints_root: Path, output: Path, strict: bool = False) -> None:
-    rows = collect_rows_from_logs(checkpoints_root, strict=strict)
+def extract_results(checkpoints_root: Path, output: Path) -> None:
+    rows = collect_rows_from_logs(checkpoints_root)
     if not rows:
-        print(f"[WARN] No complete runs found under {checkpoints_root}; writing header-only CSV.")
+        raise RuntimeError(f"No runs found under {checkpoints_root}")
     write_results_csv(rows, output)
     print(f"Wrote {len(rows)} rows to {output}")
 
@@ -434,11 +386,6 @@ def parse_args() -> argparse.Namespace:
         default=Path("artifacts/disp1to5_ablation_results.csv"),
         help="Destination CSV path",
     )
-    p_extract.add_argument(
-        "--strict",
-        action="store_true",
-        help="Fail if any discovered run is missing required result columns",
-    )
 
     p_analyze = sub.add_parser("analyze", help="analyze completed runs from CSV")
     p_analyze.add_argument("--results", type=Path, required=True)
@@ -452,7 +399,7 @@ def main() -> None:
         seeds = [int(s.strip()) for s in args.replicate_seeds.split(",") if s.strip()]
         print_plan(args.replicate_top, seeds)
     elif args.cmd == "extract":
-        extract_results(args.checkpoints_root, args.output, strict=args.strict)
+        extract_results(args.checkpoints_root, args.output)
     elif args.cmd == "analyze":
         analyze(args.results)
     else:
