@@ -144,22 +144,62 @@ def _find_last_value(text: str, pattern: re.Pattern[str]) -> Optional[float]:
         return None
 
 
-def _collect_candidate_logs(run_timestamp_dir: Path) -> List[Path]:
+def _collect_candidate_logs(search_roots: Iterable[Path]) -> List[Path]:
     candidates: List[Path] = []
-    for p in run_timestamp_dir.rglob("*"):
-        if not p.is_file():
+    seen: set[Path] = set()
+    for root in search_roots:
+        if not root.exists() or not root.is_dir():
             continue
-        if p.suffix.lower() in {".log", ".txt", ".out", ".err", ".json", ".yaml", ".yml"}:
-            candidates.append(p)
-            continue
-        if "log" in p.name.lower():
-            candidates.append(p)
+        for p in root.rglob("*"):
+            if not p.is_file() or p in seen:
+                continue
+            if p.suffix.lower() in {".log", ".txt", ".out", ".err", ".json", ".yaml", ".yml", ".csv"}:
+                seen.add(p)
+                candidates.append(p)
+                continue
+            if "log" in p.name.lower():
+                seen.add(p)
+                candidates.append(p)
     return sorted(candidates, key=lambda x: (x.stat().st_mtime, str(x)))
+
+
+def _extract_float_from_csv(path: Path, keys: Iterable[str]) -> Optional[float]:
+    try:
+        with path.open("r", encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                for key in keys:
+                    if key not in row:
+                        continue
+                    value = (row.get(key) or "").strip()
+                    if not value:
+                        continue
+                    try:
+                        last = float(value)
+                    except ValueError:
+                        continue
+            return locals().get("last")
+    except Exception:
+        return None
 
 
 def _extract_metrics_from_logs(log_files: Iterable[Path]) -> Dict[str, float]:
     metrics: Dict[str, float] = {}
+    csv_keys = {
+        "test_disp_1to5_mse": ["test/disp_1to5_mse", "test_disp_1to5_mse"],
+        "test_loss_mse": ["test/loss_mse", "test_loss_mse"],
+        "test_disp_0to0p5_mse": ["test/disp_0to0p5_mse", "test_disp_0to0p5_mse"],
+        "test_disp_0p5to1_mse": ["test/disp_0p5to1_mse", "test_disp_0p5to1_mse"],
+    }
+
     for log_path in log_files:
+        if log_path.suffix.lower() == ".csv":
+            for key, aliases in csv_keys.items():
+                value = _extract_float_from_csv(log_path, aliases)
+                if value is not None:
+                    metrics[key] = value
+            continue
+
         text = _read_text(log_path)
         if not text:
             continue
@@ -172,7 +212,22 @@ def _extract_metrics_from_logs(log_files: Iterable[Path]) -> Dict[str, float]:
 
 def _extract_params_from_logs(log_files: Iterable[Path]) -> Dict[str, float]:
     params: Dict[str, float] = {}
+    csv_keys = {
+        "disp_focus_weight": ["model.disp_focus_weight", "disp_focus_weight"],
+        "disp_outside_focus_weight": ["model.disp_outside_focus_weight", "disp_outside_focus_weight"],
+        "mse_hard_beta": ["model.mse_hard_beta", "mse_hard_beta"],
+        "lambda_cos": ["model.lambda_cos", "lambda_cos"],
+        "lambda_mag": ["model.lambda_mag", "lambda_mag"],
+    }
+
     for log_path in log_files:
+        if log_path.suffix.lower() == ".csv":
+            for key, aliases in csv_keys.items():
+                value = _extract_float_from_csv(log_path, aliases)
+                if value is not None:
+                    params[key] = value
+            continue
+
         text = _read_text(log_path)
         if not text:
             continue
@@ -197,10 +252,23 @@ def _latest_timestamp_dir(run_dir: Path) -> Optional[Path]:
     return sorted(ts_dirs, key=lambda p: p.name)[-1]
 
 
+def _hydra_output_dir_from_timestamp(repo_root: Path, timestamp: str) -> Optional[Path]:
+    m = re.fullmatch(r"(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})", timestamp)
+    if not m:
+        return None
+    day = f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+    t = f"{m.group(4)}-{m.group(5)}-{m.group(6)}"
+    candidate = repo_root / "outputs" / day / t
+    if candidate.exists() and candidate.is_dir():
+        return candidate
+    return None
+
+
 def collect_rows_from_logs(checkpoints_root: Path) -> List[Dict[str, float | str]]:
     if not checkpoints_root.exists():
         raise FileNotFoundError(f"Checkpoints root does not exist: {checkpoints_root}")
 
+    repo_root = Path(__file__).resolve().parents[1]
     defaults = _default_param_map()
     rows: List[Dict[str, float | str]] = []
 
@@ -210,7 +278,12 @@ def collect_rows_from_logs(checkpoints_root: Path) -> List[Dict[str, float | str
         if ts_dir is None:
             continue
 
-        log_files = _collect_candidate_logs(ts_dir)
+        search_roots: List[Path] = [ts_dir]
+        hydra_dir = _hydra_output_dir_from_timestamp(repo_root, ts_dir.name)
+        if hydra_dir is not None:
+            search_roots.extend([hydra_dir, hydra_dir / "logs"])
+
+        log_files = _collect_candidate_logs(search_roots)
         metrics = _extract_metrics_from_logs(log_files)
         params = dict(defaults.get(run_id, {}))
         params.update(_extract_params_from_logs(log_files))
@@ -223,7 +296,7 @@ def collect_rows_from_logs(checkpoints_root: Path) -> List[Dict[str, float | str
         if missing:
             raise ValueError(
                 f"Run {run_dir.name} is missing required columns: {missing}. "
-                f"Scanned logs under {ts_dir}"
+                f"Scanned roots: {', '.join(str(p) for p in search_roots)}"
             )
         rows.append(row)
 
