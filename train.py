@@ -23,7 +23,11 @@ def main(cfg: DictConfig):
     model = hydra.utils.instantiate(cfg.model)
 
     run_time = datetime.now().strftime("%Y%m%d-%H%M%S")
-    ckpt_dir = os.path.join(root, "checkpoints", run_time)
+    study_name = str(cfg.get("study_name", "")).strip()
+    if study_name:
+        ckpt_dir = os.path.join(root, "checkpoints", study_name, run_time)
+    else:
+        ckpt_dir = os.path.join(root, "checkpoints", run_time)
     os.makedirs(ckpt_dir, exist_ok=True)
 
     callbacks = [

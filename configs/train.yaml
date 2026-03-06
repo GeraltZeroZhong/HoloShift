@@ -12,3 +12,4 @@ paths:
   output_dir: ${hydra:runtime.cwd}/outputs
 
 seed: 42
+study_name: ""
