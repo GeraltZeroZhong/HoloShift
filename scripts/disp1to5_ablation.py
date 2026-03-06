@@ -31,7 +31,7 @@ class RunSpec:
 
 
 def default_matrix() -> List[RunSpec]:
-    """Small staged matrix (9 runs) to isolate contributions with minimal cost."""
+    """Staged matrix to isolate contributions while avoiding duplicate/low-value runs."""
     return [
         RunSpec("A0", "focus", 1.00, 1.00, 3.0, 1.0, 1.0, "control; no focus weighting"),
         RunSpec("A1", "focus", 1.25, 0.95, 3.0, 1.0, 1.0, "mild focus"),
@@ -39,9 +39,11 @@ def default_matrix() -> List[RunSpec]:
         RunSpec("A3", "focus", 2.00, 0.80, 3.0, 1.0, 1.0, "aggressive focus"),
         RunSpec("B0", "hard",  1.50, 0.90, 0.0, 1.0, 1.0, "remove hard-range boost"),
         RunSpec("B1", "hard",  1.50, 0.90, 1.5, 1.0, 1.0, "moderate hard-range boost"),
-        RunSpec("B2", "hard",  1.50, 0.90, 3.0, 1.0, 1.0, "strong hard-range boost"),
+        RunSpec("B3", "hard",  1.50, 0.90, 4.5, 1.0, 1.0, "stronger hard-range boost"),
         RunSpec("C1", "aux",   1.50, 0.90, 3.0, 0.5, 1.0, "lower cosine weight"),
         RunSpec("C2", "aux",   1.50, 0.90, 3.0, 1.0, 0.5, "lower magnitude weight"),
+        RunSpec("C3", "aux",   1.50, 0.90, 3.0, 0.5, 0.5, "lower both aux terms"),
+        RunSpec("D1", "inter", 1.50, 0.90, 0.0, 0.5, 0.5, "check if focus alone drives gains"),
     ]
 
 
@@ -60,7 +62,7 @@ def hydra_cmd(spec: RunSpec, seed: int = 42) -> str:
 
 def print_plan(replicate_top: int, replicate_seeds: List[int]) -> None:
     runs = default_matrix()
-    print("# Phase-1 matrix (minimal 9 runs)")
+    print(f"# Phase-1 matrix ({len(runs)} runs)")
     for r in runs:
         print(f"[{r.run_id}] {r.notes}")
         print(f"  {hydra_cmd(r)}")
