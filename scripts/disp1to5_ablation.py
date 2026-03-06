@@ -202,6 +202,25 @@ def _extract_float_from_csv(path: Path, keys: Iterable[str]) -> Optional[float]:
         return None
 
 
+def _extract_disp_1to5_from_csv(path: Path) -> Optional[float]:
+    """Recover disp_1to5 from fine bins when aggregate key is absent."""
+    suffixes = ["1to2", "2to3", "3to4", "4to5"]
+    weighted_sum = 0.0
+    count_sum = 0.0
+
+    for suffix in suffixes:
+        mse = _extract_float_from_csv(path, [f"test/disp_{suffix}_mse", f"test_disp_{suffix}_mse"])
+        count = _extract_float_from_csv(path, [f"test/disp_{suffix}_count", f"test_disp_{suffix}_count"])
+        if mse is None or count is None or count <= 0:
+            continue
+        weighted_sum += mse * count
+        count_sum += count
+
+    if count_sum <= 0:
+        return None
+    return weighted_sum / count_sum
+
+
 def _collect_available_metric_keys(log_files: Iterable[Path]) -> List[str]:
     metricish: set[str] = set()
     for log_path in log_files:
@@ -229,7 +248,12 @@ def _extract_metrics_from_logs(log_files: Iterable[Path]) -> Dict[str, float]:
         "test_disp_1to5_mse": ["test/disp_1to5_mse", "test_disp_1to5_mse"],
         "test_loss_mse": ["test/loss_mse", "test_loss_mse"],
         "test_disp_0to0p5_mse": ["test/disp_0to0p5_mse", "test_disp_0to0p5_mse"],
-        "test_disp_0p5to1_mse": ["test/disp_0p5to1_mse", "test_disp_0p5to1_mse"],
+        "test_disp_0p5to1_mse": [
+            "test/disp_0p5to1_mse",
+            "test_disp_0p5to1_mse",
+            "test/disp_0p5to5_mse",
+            "test_disp_0p5to5_mse",
+        ],
     }
 
     for log_path in log_files:
@@ -238,6 +262,11 @@ def _extract_metrics_from_logs(log_files: Iterable[Path]) -> Dict[str, float]:
                 value = _extract_float_from_csv(log_path, aliases)
                 if value is not None:
                     metrics[key] = value
+
+            if "test_disp_1to5_mse" not in metrics:
+                fallback_disp = _extract_disp_1to5_from_csv(log_path)
+                if fallback_disp is not None:
+                    metrics["test_disp_1to5_mse"] = fallback_disp
             continue
 
         text = _read_text(log_path)
