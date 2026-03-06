@@ -13,6 +13,7 @@ import argparse
 import csv
 import math
 import re
+from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -366,6 +367,55 @@ def _csv_logger_dir_for_run(repo_root: Path, run_dir_name: str) -> Optional[Path
     return None
 
 
+
+
+def _parse_compact_timestamp(timestamp: str) -> Optional[datetime]:
+    try:
+        return datetime.strptime(timestamp, "%Y%m%d-%H%M%S")
+    except Exception:
+        return None
+
+
+def _csv_has_required_metrics(metrics_csv: Path) -> bool:
+    try:
+        with metrics_csv.open("r", encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f)
+            headers = set(reader.fieldnames or [])
+    except Exception:
+        return False
+    has_disp = "test/disp_1to5_mse" in headers or "test_disp_1to5_mse" in headers
+    has_loss = "test/loss_mse" in headers or "test_loss_mse" in headers
+    return has_disp and has_loss
+
+
+def _fallback_csv_logger_dir_for_run(repo_root: Path, run_timestamp: str) -> Optional[Path]:
+    """Fallback when hparams does not include run identity.
+
+    Picks the `version_*` dir whose metrics.csv has required test keys and whose
+    file modification time is closest to the run timestamp.
+    """
+
+    target_dt = _parse_compact_timestamp(run_timestamp)
+    if target_dt is None:
+        return None
+
+    candidates: List[tuple[float, Path]] = []
+    for version_dir in _csv_logger_dirs(repo_root):
+        metrics_csv = version_dir / "metrics.csv"
+        if not metrics_csv.exists() or not _csv_has_required_metrics(metrics_csv):
+            continue
+        try:
+            delta = abs(metrics_csv.stat().st_mtime - target_dt.timestamp())
+        except Exception:
+            continue
+        candidates.append((delta, version_dir))
+
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: (item[0], str(item[1])))
+    return candidates[0][1]
+
+
 def collect_rows_from_logs(
     checkpoints_root: Path, strict: bool = False
 ) -> Tuple[List[Dict[str, float | str]], List[str]]:
@@ -395,6 +445,11 @@ def collect_rows_from_logs(
             search_roots.extend([hydra_dir, hydra_dir / "logs"])
 
         csv_logger_dir = _csv_logger_dir_for_run(repo_root, run_dir.name)
+        csv_logger_match_mode = "hparams"
+        if csv_logger_dir is None:
+            csv_logger_dir = _fallback_csv_logger_dir_for_run(repo_root, ts_dir.name)
+            if csv_logger_dir is not None:
+                csv_logger_match_mode = "timestamp_fallback"
         if csv_logger_dir is not None:
             search_roots.append(csv_logger_dir)
 
@@ -423,7 +478,7 @@ def collect_rows_from_logs(
             else:
                 message += ". No metric-like CSV headers were detected; this run likely has no test logs yet."
             if csv_logger_dir is not None:
-                message += f" Checked CSVLogger dir: {csv_logger_dir}"
+                message += f" Checked CSVLogger dir ({csv_logger_match_mode}): {csv_logger_dir}"
 
             if strict:
                 raise ValueError(message)
