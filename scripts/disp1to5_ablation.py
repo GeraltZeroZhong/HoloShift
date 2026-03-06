@@ -198,6 +198,27 @@ def _extract_float_from_csv(path: Path, keys: Iterable[str]) -> Optional[float]:
         return None
 
 
+def _collect_available_metric_keys(log_files: Iterable[Path]) -> List[str]:
+    metricish: set[str] = set()
+    for log_path in log_files:
+        if log_path.suffix.lower() != ".csv":
+            continue
+        try:
+            with log_path.open("r", encoding="utf-8", newline="") as f:
+                reader = csv.DictReader(f)
+                headers = reader.fieldnames or []
+        except Exception:
+            continue
+
+        for h in headers:
+            if not h:
+                continue
+            low = h.lower()
+            if any(tok in low for tok in ("test", "val", "disp", "mse", "loss")):
+                metricish.add(h)
+    return sorted(metricish)
+
+
 def _extract_metrics_from_logs(log_files: Iterable[Path]) -> Dict[str, float]:
     metrics: Dict[str, float] = {}
     csv_keys = {
@@ -279,15 +300,19 @@ def _hydra_output_dir_from_timestamp(repo_root: Path, timestamp: str) -> Optiona
     return None
 
 
-def collect_rows_from_logs(checkpoints_root: Path) -> List[Dict[str, float | str]]:
+def collect_rows_from_logs(
+    checkpoints_root: Path, strict: bool = False
+) -> Tuple[List[Dict[str, float | str]], List[str], int]:
     if not checkpoints_root.exists():
         raise FileNotFoundError(f"Checkpoints root does not exist: {checkpoints_root}")
 
     repo_root = Path(__file__).resolve().parents[1]
     defaults = _default_param_map()
     rows: List[Dict[str, float | str]] = []
+    warnings: List[str] = []
+    run_dirs = sorted([p for p in checkpoints_root.iterdir() if p.is_dir()])
 
-    for run_dir in sorted([p for p in checkpoints_root.iterdir() if p.is_dir()]):
+    for run_dir in run_dirs:
         run_id, _seed = _parse_run_id_seed(run_dir.name)
         ts_dir = _latest_timestamp_dir(run_dir)
         if ts_dir is None:
@@ -309,13 +334,23 @@ def collect_rows_from_logs(checkpoints_root: Path) -> List[Dict[str, float | str
 
         missing = [c for c in RESULTS_COLUMNS if c not in row]
         if missing:
-            raise ValueError(
+            discovered = _collect_available_metric_keys(log_files)
+            message = (
                 f"Run {run_dir.name} is missing required columns: {missing}. "
                 f"Scanned roots: {', '.join(str(p) for p in search_roots)}"
             )
+            if discovered:
+                message += f". Available metric-like CSV keys include: {discovered[:10]}"
+            else:
+                message += ". No metric-like CSV headers were detected; this run likely has no test logs yet."
+
+            if strict:
+                raise ValueError(message)
+            warnings.append(message)
+            continue
         rows.append(row)
 
-    return rows
+    return rows, warnings, len(run_dirs)
 
 
 def write_results_csv(rows: List[Dict[str, float | str]], output: Path) -> None:
@@ -326,12 +361,25 @@ def write_results_csv(rows: List[Dict[str, float | str]], output: Path) -> None:
         writer.writerows(rows)
 
 
-def extract_results(checkpoints_root: Path, output: Path) -> None:
-    rows = collect_rows_from_logs(checkpoints_root)
+def extract_results(checkpoints_root: Path, output: Path, strict: bool = False) -> None:
+    rows, warnings, run_dir_count = collect_rows_from_logs(checkpoints_root, strict=strict)
     if not rows:
-        raise RuntimeError(f"No runs found under {checkpoints_root}")
+        if run_dir_count == 0:
+            raise RuntimeError(
+                f"No run directories found under {checkpoints_root} (resolved: {checkpoints_root.resolve()}). "
+                "Expected layout: <checkpoints_root>/<RUN_ID>_seed<SEED>/<timestamp>/."
+            )
+        detail = f" First incomplete run: {warnings[0]}" if warnings else ""
+        raise RuntimeError(
+            f"Found {run_dir_count} run directories under {checkpoints_root}, but none had complete test metrics."
+            f"{detail}"
+        )
     write_results_csv(rows, output)
     print(f"Wrote {len(rows)} rows to {output}")
+    if warnings:
+        print(f"\nSkipped {len(warnings)} incomplete runs:")
+        for w in warnings:
+            print(f"- {w}")
 
 
 def _float(row: Dict[str, str], key: str) -> float:
@@ -353,14 +401,47 @@ def analyze(results_path: Path) -> None:
         raise ValueError(f"Results CSV missing columns: {missing}")
 
     ranked = sorted(rows, key=lambda r: _float(r, "test_disp_1to5_mse"))
-    print("# Top runs by test_disp_1to5_mse")
-    for r in ranked[:5]:
+    baseline_row = next((r for r in rows if r["run_id"] == "A0"), ranked[0])
+    b_disp = _float(baseline_row, "test_disp_1to5_mse")
+    b_loss = _float(baseline_row, "test_loss_mse")
+    b_00 = _float(baseline_row, "test_disp_0to0p5_mse")
+    b_05 = _float(baseline_row, "test_disp_0p5to1_mse")
+
+    print("# Ranked ablation results (lower is better)")
+    print(
+        "run_id | disp_1to5 | ΔvsA0 | loss_mse | ΔvsA0 | 0to0p5 | ΔvsA0 | 0p5to1 | ΔvsA0 | gates"
+    )
+    print("-" * 112)
+    for r in ranked:
+        disp = _float(r, "test_disp_1to5_mse")
+        loss = _float(r, "test_loss_mse")
+        d00 = _float(r, "test_disp_0to0p5_mse")
+        d05 = _float(r, "test_disp_0p5to1_mse")
+
+        disp_gain = (b_disp - disp) / max(b_disp, 1e-12)
+        loss_deg = (loss - b_loss) / max(b_loss, 1e-12)
+        d00_deg = (d00 - b_00) / max(b_00, 1e-12)
+        d05_deg = (d05 - b_05) / max(b_05, 1e-12)
+        if r["run_id"] == baseline_row["run_id"]:
+            gate_text = "BASELINE"
+        else:
+            gates = (
+                (disp_gain >= 0.05),
+                (loss_deg <= 0.10),
+                (d00_deg <= 0.15),
+                (d05_deg <= 0.15),
+            )
+            gate_text = "PASS" if all(gates) else "FAIL"
+
         print(
-            f"{r['run_id']}: disp_1to5={_float(r, 'test_disp_1to5_mse'):.6f}, "
-            f"loss_mse={_float(r, 'test_loss_mse'):.6f}, "
-            f"disp_0to0p5={_float(r, 'test_disp_0to0p5_mse'):.6f}, "
-            f"disp_0p5to1={_float(r, 'test_disp_0p5to1_mse'):.6f}"
+            f"{r['run_id']:>5} | {disp:>9.6f} | {disp_gain:+6.2%} | {loss:>8.6f} | {loss_deg:+6.2%} | "
+            f"{d00:>7.6f} | {d00_deg:+6.2%} | {d05:>7.6f} | {d05_deg:+6.2%} | {gate_text}"
         )
+
+    print(
+        f"\nBaseline for gate checks: run {baseline_row['run_id']} "
+        f"(disp_1to5={b_disp:.6f}, loss_mse={b_loss:.6f})."
+    )
 
     objective = [_float(r, "test_disp_1to5_mse") for r in rows]
     gmean = sum(objective) / max(len(objective), 1)
@@ -401,6 +482,11 @@ def parse_args() -> argparse.Namespace:
         default=Path("artifacts/disp1to5_ablation_results.csv"),
         help="Destination CSV path",
     )
+    p_extract.add_argument(
+        "--strict",
+        action="store_true",
+        help="Fail when a run is incomplete instead of skipping it with warnings",
+    )
 
     p_analyze = sub.add_parser("analyze", help="analyze completed runs from CSV")
     p_analyze.add_argument("--results", type=Path, required=True)
@@ -414,7 +500,7 @@ def main() -> None:
         seeds = [int(s.strip()) for s in args.replicate_seeds.split(",") if s.strip()]
         print_plan(args.replicate_top, seeds)
     elif args.cmd == "extract":
-        extract_results(args.checkpoints_root, args.output)
+        extract_results(args.checkpoints_root, args.output, strict=args.strict)
     elif args.cmd == "analyze":
         analyze(args.results)
     else:
