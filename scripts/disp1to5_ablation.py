@@ -302,7 +302,7 @@ def _hydra_output_dir_from_timestamp(repo_root: Path, timestamp: str) -> Optiona
 
 def collect_rows_from_logs(
     checkpoints_root: Path, strict: bool = False
-) -> Tuple[List[Dict[str, float | str]], List[str]]:
+) -> Tuple[List[Dict[str, float | str]], List[str], int]:
     if not checkpoints_root.exists():
         raise FileNotFoundError(f"Checkpoints root does not exist: {checkpoints_root}")
 
@@ -310,8 +310,9 @@ def collect_rows_from_logs(
     defaults = _default_param_map()
     rows: List[Dict[str, float | str]] = []
     warnings: List[str] = []
+    run_dirs = sorted([p for p in checkpoints_root.iterdir() if p.is_dir()])
 
-    for run_dir in sorted([p for p in checkpoints_root.iterdir() if p.is_dir()]):
+    for run_dir in run_dirs:
         run_id, _seed = _parse_run_id_seed(run_dir.name)
         ts_dir = _latest_timestamp_dir(run_dir)
         if ts_dir is None:
@@ -349,7 +350,7 @@ def collect_rows_from_logs(
             continue
         rows.append(row)
 
-    return rows, warnings
+    return rows, warnings, len(run_dirs)
 
 
 def write_results_csv(rows: List[Dict[str, float | str]], output: Path) -> None:
@@ -361,9 +362,18 @@ def write_results_csv(rows: List[Dict[str, float | str]], output: Path) -> None:
 
 
 def extract_results(checkpoints_root: Path, output: Path, strict: bool = False) -> None:
-    rows, warnings = collect_rows_from_logs(checkpoints_root, strict=strict)
+    rows, warnings, run_dir_count = collect_rows_from_logs(checkpoints_root, strict=strict)
     if not rows:
-        raise RuntimeError(f"No runs found under {checkpoints_root}")
+        if run_dir_count == 0:
+            raise RuntimeError(
+                f"No run directories found under {checkpoints_root} (resolved: {checkpoints_root.resolve()}). "
+                "Expected layout: <checkpoints_root>/<RUN_ID>_seed<SEED>/<timestamp>/."
+            )
+        detail = f" First incomplete run: {warnings[0]}" if warnings else ""
+        raise RuntimeError(
+            f"Found {run_dir_count} run directories under {checkpoints_root}, but none had complete test metrics."
+            f"{detail}"
+        )
     write_results_csv(rows, output)
     print(f"Wrote {len(rows)} rows to {output}")
     if warnings:
