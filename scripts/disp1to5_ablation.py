@@ -333,17 +333,6 @@ def _hydra_output_dir_from_timestamp(repo_root: Path, timestamp: str) -> Optiona
     return None
 
 
-def _csv_logger_dirs(repo_root: Path, limit: int = 5) -> List[Path]:
-    """Return latest CSVLogger version dirs such as logs/holoshift/version_*/metrics.csv."""
-    base = repo_root / "logs" / "holoshift"
-    if not base.exists() or not base.is_dir():
-        return []
-
-    version_dirs = [p for p in base.iterdir() if p.is_dir() and p.name.startswith("version_")]
-    valid_dirs = [p for p in sorted(version_dirs, key=lambda x: x.name, reverse=True) if (p / "metrics.csv").exists()]
-    return valid_dirs[:limit]
-
-
 def collect_rows_from_logs(
     checkpoints_root: Path, strict: bool = False
 ) -> Tuple[List[Dict[str, float | str]], List[str]]:
@@ -372,10 +361,6 @@ def collect_rows_from_logs(
         if hydra_dir is not None:
             search_roots.extend([hydra_dir, hydra_dir / "logs"])
 
-        csv_logger_dirs = _csv_logger_dirs(repo_root)
-        if csv_logger_dirs:
-            search_roots.extend(csv_logger_dirs)
-
         log_files = _collect_candidate_logs(search_roots)
         metrics = _extract_metrics_from_logs(log_files)
         params = dict(defaults.get(run_id, {}))
@@ -400,9 +385,6 @@ def collect_rows_from_logs(
                 message += f". Available metric-like CSV keys include: {discovered[:10]}"
             else:
                 message += ". No metric-like CSV headers were detected; this run likely has no test logs yet."
-            if csv_logger_dirs:
-                message += f" Checked CSVLogger dirs: {', '.join(str(p) for p in csv_logger_dirs)}"
-
             if strict:
                 raise ValueError(message)
             warnings.append(message)
