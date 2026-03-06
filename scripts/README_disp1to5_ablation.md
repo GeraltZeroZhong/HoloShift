@@ -8,18 +8,28 @@ This workflow targets `test/disp_1to5_mse` with the smallest staged matrix that 
 python scripts/disp1to5_ablation.py plan
 ```
 
-This prints 9 phase-1 runs that vary:
+This prints 11 phase-1 runs that vary:
 - `disp_focus_weight`
 - `disp_outside_focus_weight`
 - `mse_hard_beta`
 - `lambda_cos`
 - `lambda_mag`
 
-and optional phase-2 replication guidance for top runs across multiple seeds.
+and adds a focused interaction stress-test (`D1`) to check whether gains persist when hard-range/aux boosts are dialed down.
+
+It also removes a redundant run that duplicated the current default settings.
 
 ## 2) Execute runs
 
-Run each printed `python train.py ...` command.
+Option A (manual): run each printed `python train.py ...` command.
+
+Option B (automatic phase-1 runner):
+
+```bash
+python scripts/run_disp1to5_ablation_all.py
+```
+
+Use `--dry-run` to only print commands, or `--seed` to change the seed used for all phase-1 runs.
 
 Each ablation run sets `study_name=disp1to5_ablation/<RUN_ID>_seed<SEED>`, so checkpoints are grouped under:
 
