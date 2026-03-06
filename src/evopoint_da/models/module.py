@@ -20,19 +20,17 @@ class EvoPointLitModule(pl.LightningModule):
         mse_weight_steepness: float = 3.0,
         mse_weight_rise_center: float = 0.5,
         mse_weight_fall_center: float = 5.0,
-        mse_hard_gamma: float = 1.5,
         mse_hard_beta: float = 3.0,
         mse_hard_p: float = 1.5,
-        node_mse_cap: float = 2.0,
         direction_mask_threshold: float = 0.5,
         direction_mask_upper: float = 5.0,
         mse_hard_range_min: float = 1.0,
         mse_hard_range_max: float = 5.0,
+        disp_focus_min: float = 1.0,
+        disp_focus_max: float = 5.0,
+        disp_focus_weight: float = 1.5,
+        disp_outside_focus_weight: float = 0.9,
         flexible_threshold: float = 1.0,
-        plddt_low_cutoff: float = 50.0,
-        plddt_mid_cutoff: float = 70.0,
-        plddt_bin_size: int = 10,
-        plddt_max: float = 100.0,
         lambda_cos: float = 0.5,
         lambda_mag: float = 1.0,
         plddt_gate_start: float = 90.0,
@@ -115,6 +113,8 @@ class EvoPointLitModule(pl.LightningModule):
             baseline_disp_1to5_mse = agg_baseline_sse_sum / agg_n_elem
             self.log("test/disp_1to5_mse", disp_1to5_mse)
             self.log("test/baseline_disp_1to5_mse", baseline_disp_1to5_mse)
+            rel_improve = (baseline_disp_1to5_mse - disp_1to5_mse) / baseline_disp_1to5_mse.clamp_min(1e-8)
+            self.log("test/summary/disp_1to5_rel_improve_vs_baseline", rel_improve)
 
     def forward(self, batch):
         _, pos_updated = self.backbone(batch.x, batch.pos, batch.edge_index, batch.edge_attr)
@@ -126,6 +126,34 @@ class EvoPointLitModule(pl.LightningModule):
         src, dst = edge_index
         dist = torch.norm(pos_pred[src] - pos_pred[dst], dim=-1)
         return F.relu(self.hparams.clash_cutoff - dist).mean()
+
+    def _log_disp_group_metrics(
+        self,
+        stage: str,
+        delta_pred_real: torch.Tensor,
+        y_true: torch.Tensor,
+        gt_disp_mag: torch.Tensor,
+        batch_size: int | None,
+    ):
+        groups = [
+            (0.0, 1.0, "0to1"),
+            (1.0, 5.0, "1to5"),
+            (5.0, None, "gt5"),
+        ]
+        for low, high, suffix in groups:
+            if high is None:
+                mask = gt_disp_mag >= low
+            else:
+                mask = (gt_disp_mag >= low) & (gt_disp_mag < high)
+
+            count = int(mask.sum().item())
+            self.log(f"{stage}/disp_group/{suffix}_count", float(count), batch_size=batch_size)
+            if count > 0:
+                mse = F.mse_loss(delta_pred_real[mask], y_true[mask])
+                mae = F.l1_loss(delta_pred_real[mask], y_true[mask])
+                self.log(f"{stage}/disp_group/{suffix}_mse", mse, batch_size=batch_size)
+                self.log(f"{stage}/disp_group/{suffix}_rmsd", torch.sqrt(mse), batch_size=batch_size)
+                self.log(f"{stage}/disp_group/{suffix}_mae", mae, batch_size=batch_size)
 
     def _shared_step(self, batch, stage: str):
         delta_pred = self.forward(batch)
@@ -165,6 +193,13 @@ class EvoPointLitModule(pl.LightningModule):
         w_hard = torch.ones_like(target_mag_real)
         w_hard[in_hard_range] = 1.0 + self.hparams.mse_hard_beta * (t[in_hard_range] ** self.hparams.mse_hard_p)
         mse_weights = mse_weights * w_hard
+
+        focus_min = self.hparams.disp_focus_min
+        focus_max = self.hparams.disp_focus_max
+        in_focus = (target_mag_real >= focus_min) & (target_mag_real < focus_max)
+        focus_weights = torch.full_like(target_mag_real, self.hparams.disp_outside_focus_weight)
+        focus_weights[in_focus] = self.hparams.disp_focus_weight
+        mse_weights = mse_weights * focus_weights
 
         eps = 1e-8
         mse_weights = mse_weights / (mse_weights.mean().detach() + eps)
@@ -206,11 +241,21 @@ class EvoPointLitModule(pl.LightningModule):
         self.log(f"{stage}/loss", loss, prog_bar=(stage != "train"), batch_size=batch_size)
         self.log(f"{stage}/loss_cos", loss_cos, batch_size=batch_size) 
         self.log(f"{stage}/loss_high_plddt_l2", high_plddt_l2, batch_size=batch_size)
+        self.log(f"{stage}/loss_components/weighted_node", loss_mse, batch_size=batch_size)
+        self.log(f"{stage}/loss_components/cos", loss_cos, batch_size=batch_size)
+        self.log(f"{stage}/loss_components/magnitude", loss_mag, batch_size=batch_size)
+        self.log(f"{stage}/loss_components/clash", loss_clash, batch_size=batch_size)
+        self.log(f"{stage}/loss_components/high_plddt_l2", high_plddt_l2, batch_size=batch_size)
         mse_real = F.mse_loss(delta_pred_real, batch.y)
         self.log(f"{stage}/loss_mse", mse_real, batch_size=batch_size)
         self.log(f"{stage}/pred_magnitude", torch.norm(delta_pred_real, dim=-1).mean(), batch_size=batch_size)
+        self.log(f"{stage}/weights/mean", mse_weights.mean(), batch_size=batch_size)
+        self.log(f"{stage}/weights/std", mse_weights.std(unbiased=False), batch_size=batch_size)
+        self.log(f"{stage}/weights/focus_frac", in_focus.float().mean(), batch_size=batch_size)
+        self.log(f"{stage}/weights/hard_frac", in_hard_range.float().mean(), batch_size=batch_size)
 
         gt_disp_mag = torch.norm(batch.y, dim=-1)
+        self._log_disp_group_metrics(stage, delta_pred_real, batch.y, gt_disp_mag, batch_size)
         if stage == "val":
             disp_1to5_mask = (gt_disp_mag >= 1.0) & (gt_disp_mag < 5.0)
             if disp_1to5_mask.any():
@@ -258,15 +303,23 @@ class EvoPointLitModule(pl.LightningModule):
 
         self.log("test/loss", loss)
         self.log("test/loss_mse", loss_mse_real)
+        self.log("test/loss_mae", F.l1_loss(delta_pred_real, batch.y))
         self.log("test/loss_clash", loss_clash)
+        self.log("test/loss_components/weighted_node", loss_mse_real)
+        self.log("test/loss_components/clash", loss_clash)
 
         baseline_delta = torch.zeros_like(batch.y)
         baseline_sq_error = baseline_delta - batch.y
         baseline_sq_error = baseline_sq_error ** 2
-        self.log("test/baseline_mse", F.mse_loss(baseline_delta, batch.y))
+        baseline_mse = F.mse_loss(baseline_delta, batch.y)
+        self.log("test/baseline_mse", baseline_mse)
+        self.log("test/baseline_mae", F.l1_loss(baseline_delta, batch.y))
+        overall_rel_improve = (baseline_mse - loss_mse_real) / baseline_mse.clamp_min(1e-8)
+        self.log("test/summary/overall_rel_improve_vs_baseline", overall_rel_improve)
         self.log("test/pred_magnitude", torch.norm(delta_pred_real, dim=-1).mean())
 
         gt_disp_mag = torch.norm(batch.y, dim=-1)
+        self._log_disp_group_metrics("test", delta_pred_real, batch.y, gt_disp_mag, batch_size=1)
         flexible_mask = gt_disp_mag > self.hparams.flexible_threshold
         if flexible_mask.any():
             flex_mse = F.mse_loss(delta_pred_real[flexible_mask], batch.y[flexible_mask])
