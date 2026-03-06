@@ -39,7 +39,7 @@ Each ablation run sets `study_name=disp1to5_ablation/<RUN_ID>_seed<SEED>`, so ch
 
 Use the extraction script to parse each run's logs and write the CSV:
 
-The extractor first scans the checkpoint timestamp directory, and if test metrics are not present there it also checks the matching Hydra output directory (`outputs/YYYY-MM-DD/HH-MM-SS`) for CSV logs.
+The extractor scans each run's checkpoint timestamp directory and, when needed, the matching Hydra output directory (`outputs/YYYY-MM-DD/HH-MM-SS`) for that same run. It does not fall back to unrelated global logger versions, so runs cannot accidentally reuse another run's metrics.
 
 ```bash
 python scripts/disp1to5_ablation.py extract \
