@@ -163,12 +163,27 @@ def _collect_candidate_logs(search_roots: Iterable[Path]) -> List[Path]:
     return sorted(candidates, key=lambda x: (x.stat().st_mtime, str(x)))
 
 
+def _iter_csv_key_aliases(base_keys: Iterable[str]) -> List[str]:
+    aliases: List[str] = []
+    for key in base_keys:
+        aliases.append(key)
+        aliases.append(f"{key}_epoch")
+        aliases.append(f"{key}_step")
+        aliases.append(f"{key}/dataloader_idx_0")
+        aliases.append(f"{key}_dataloader_idx_0")
+        aliases.append(f"{key}_epoch/dataloader_idx_0")
+        aliases.append(f"{key}_epoch_dataloader_idx_0")
+    # preserve insertion order while removing duplicates
+    return list(dict.fromkeys(aliases))
+
+
 def _extract_float_from_csv(path: Path, keys: Iterable[str]) -> Optional[float]:
+    alias_keys = _iter_csv_key_aliases(keys)
     try:
         with path.open("r", encoding="utf-8", newline="") as f:
             reader = csv.DictReader(f)
             for row in reader:
-                for key in keys:
+                for key in alias_keys:
                     if key not in row:
                         continue
                     value = (row.get(key) or "").strip()
