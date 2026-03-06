@@ -333,15 +333,37 @@ def _hydra_output_dir_from_timestamp(repo_root: Path, timestamp: str) -> Optiona
     return None
 
 
-def _csv_logger_dirs(repo_root: Path, limit: int = 5) -> List[Path]:
-    """Return latest CSVLogger version dirs such as logs/holoshift/version_*/metrics.csv."""
+def _csv_logger_dirs(repo_root: Path) -> List[Path]:
+    """Return CSVLogger version dirs such as logs/holoshift/version_*/metrics.csv."""
     base = repo_root / "logs" / "holoshift"
     if not base.exists() or not base.is_dir():
         return []
 
     version_dirs = [p for p in base.iterdir() if p.is_dir() and p.name.startswith("version_")]
-    valid_dirs = [p for p in sorted(version_dirs, key=lambda x: x.name, reverse=True) if (p / "metrics.csv").exists()]
-    return valid_dirs[:limit]
+    return [p for p in sorted(version_dirs, key=lambda x: x.name, reverse=True) if (p / "metrics.csv").exists()]
+
+
+def _csv_logger_dir_for_run(repo_root: Path, run_dir_name: str) -> Optional[Path]:
+    """Best-effort match of a CSVLogger directory to a specific ablation run.
+
+    The global `logs/holoshift/version_*` namespace stores metrics for many runs.
+    We only trust a version dir when its metadata references the current run.
+    """
+
+    run_token = re.escape(run_dir_name)
+    run_pattern = re.compile(rf"(^|[^A-Za-z0-9_]){run_token}([^A-Za-z0-9_]|$)")
+    study_pattern = re.compile(rf"disp1to5_ablation/{run_token}")
+
+    for version_dir in _csv_logger_dirs(repo_root):
+        hparams = version_dir / "hparams.yaml"
+        if not hparams.exists():
+            continue
+        text = _read_text(hparams)
+        if not text:
+            continue
+        if run_pattern.search(text) or study_pattern.search(text):
+            return version_dir
+    return None
 
 
 def collect_rows_from_logs(
@@ -372,9 +394,9 @@ def collect_rows_from_logs(
         if hydra_dir is not None:
             search_roots.extend([hydra_dir, hydra_dir / "logs"])
 
-        csv_logger_dirs = _csv_logger_dirs(repo_root)
-        if csv_logger_dirs:
-            search_roots.extend(csv_logger_dirs)
+        csv_logger_dir = _csv_logger_dir_for_run(repo_root, run_dir.name)
+        if csv_logger_dir is not None:
+            search_roots.append(csv_logger_dir)
 
         log_files = _collect_candidate_logs(search_roots)
         metrics = _extract_metrics_from_logs(log_files)
@@ -400,8 +422,8 @@ def collect_rows_from_logs(
                 message += f". Available metric-like CSV keys include: {discovered[:10]}"
             else:
                 message += ". No metric-like CSV headers were detected; this run likely has no test logs yet."
-            if csv_logger_dirs:
-                message += f" Checked CSVLogger dirs: {', '.join(str(p) for p in csv_logger_dirs)}"
+            if csv_logger_dir is not None:
+                message += f" Checked CSVLogger dir: {csv_logger_dir}"
 
             if strict:
                 raise ValueError(message)
