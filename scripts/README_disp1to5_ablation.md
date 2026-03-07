@@ -75,3 +75,15 @@ The script prints:
 1. `test/disp_1to5_mse` improves >= 5% vs A0 control.
 2. `test/loss_mse` degradation <= 10% vs A0.
 3. `test/disp_0to0p5_mse` and `test/disp_0p5to1_mse` each degrade <= 15% vs A0.
+
+---
+
+## Additive/Constructive ablation runner (A0/B1/C1/D1/E1/F1)
+
+For the one-factor-at-a-time additive design (all-off baseline A0, then restore one logical loss group at a time), use:
+
+```bash
+python scripts/run_additive_ablation_all.py
+```
+
+Use `--dry-run` to print all `train.py` commands without running, and `--extra-override` for shared Hydra overrides (for example, limiting epochs for quick sweeps).
