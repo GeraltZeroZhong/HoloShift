@@ -33,6 +33,10 @@ class EvoPointLitModule(pl.LightningModule):
         flexible_threshold: float = 1.0,
         lambda_cos: float = 0.5,
         lambda_mag: float = 1.0,
+        cos_warmup_epochs: int = 0,
+        mag_warmup_epochs: int = 0,
+        hard_warmup_epochs: int = 0,
+        focus_warmup_epochs: int = 0,
         plddt_gate_start: float = 90.0,
         plddt_gate_end: float = 100.0,
         lambda_high_plddt_l2: float = 0.1,
@@ -159,6 +163,16 @@ class EvoPointLitModule(pl.LightningModule):
         delta_pred = self.forward(batch)
         high_plddt_l2 = torch.zeros((), device=self.device, dtype=delta_pred.dtype)
 
+        def _warmup_factor(warmup_epochs: int) -> float:
+            if warmup_epochs <= 0:
+                return 1.0
+            return min(1.0, float(self.current_epoch + 1) / float(warmup_epochs))
+
+        cos_warmup = _warmup_factor(int(self.hparams.cos_warmup_epochs))
+        mag_warmup = _warmup_factor(int(self.hparams.mag_warmup_epochs))
+        hard_warmup = _warmup_factor(int(self.hparams.hard_warmup_epochs))
+        focus_warmup = _warmup_factor(int(self.hparams.focus_warmup_epochs))
+
         if hasattr(batch, "plddt") and batch.plddt is not None:
             plddt = batch.plddt
             if plddt.dim() > 1:
@@ -192,14 +206,14 @@ class EvoPointLitModule(pl.LightningModule):
         t = (target_mag_real.clamp(hard_min, hard_max) - hard_min) / hard_span
         w_hard = torch.ones_like(target_mag_real)
         w_hard[in_hard_range] = 1.0 + self.hparams.mse_hard_beta * (t[in_hard_range] ** self.hparams.mse_hard_p)
-        mse_weights = mse_weights * w_hard
+        mse_weights = mse_weights * (1.0 + hard_warmup * (w_hard - 1.0))
 
         focus_min = self.hparams.disp_focus_min
         focus_max = self.hparams.disp_focus_max
         in_focus = (target_mag_real >= focus_min) & (target_mag_real < focus_max)
         focus_weights = torch.full_like(target_mag_real, self.hparams.disp_outside_focus_weight)
         focus_weights[in_focus] = self.hparams.disp_focus_weight
-        mse_weights = mse_weights * focus_weights
+        mse_weights = mse_weights * (1.0 + focus_warmup * (focus_weights - 1.0))
 
         eps = 1e-8
         mse_weights = mse_weights / (mse_weights.mean().detach() + eps)
@@ -226,10 +240,13 @@ class EvoPointLitModule(pl.LightningModule):
         pos_pred = batch.pos + delta_pred_real
         loss_clash = self._clash_penalty(pos_pred, batch.edge_index)
         
+        lambda_cos_eff = self.hparams.lambda_cos * cos_warmup
+        lambda_mag_eff = self.hparams.lambda_mag * mag_warmup
+
         loss = (
             loss_mse
-            + self.hparams.lambda_cos * loss_cos
-            + self.hparams.lambda_mag * loss_mag
+            + lambda_cos_eff * loss_cos
+            + lambda_mag_eff * loss_mag
             + self.hparams.lambda_clash * loss_clash
             + self.hparams.lambda_high_plddt_l2 * high_plddt_l2
         )
@@ -244,6 +261,12 @@ class EvoPointLitModule(pl.LightningModule):
         self.log(f"{stage}/loss_components/weighted_node", loss_mse, batch_size=batch_size)
         self.log(f"{stage}/loss_components/cos", loss_cos, batch_size=batch_size)
         self.log(f"{stage}/loss_components/magnitude", loss_mag, batch_size=batch_size)
+        self.log(f"{stage}/weights/lambda_cos_eff", lambda_cos_eff, batch_size=batch_size)
+        self.log(f"{stage}/weights/lambda_mag_eff", lambda_mag_eff, batch_size=batch_size)
+        self.log(f"{stage}/weights/cos_warmup", cos_warmup, batch_size=batch_size)
+        self.log(f"{stage}/weights/mag_warmup", mag_warmup, batch_size=batch_size)
+        self.log(f"{stage}/weights/hard_warmup", hard_warmup, batch_size=batch_size)
+        self.log(f"{stage}/weights/focus_warmup", focus_warmup, batch_size=batch_size)
         self.log(f"{stage}/loss_components/clash", loss_clash, batch_size=batch_size)
         self.log(f"{stage}/loss_components/high_plddt_l2", high_plddt_l2, batch_size=batch_size)
         mse_real = F.mse_loss(delta_pred_real, batch.y)
