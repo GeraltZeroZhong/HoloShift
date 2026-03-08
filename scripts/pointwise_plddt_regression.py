@@ -30,6 +30,7 @@ def parse_args():
     parser.add_argument("--output_json", default="artifacts/pointwise_plddt_regression.json")
     parser.add_argument("--output_csv", default="artifacts/pointwise_plddt_samples.csv")
     parser.add_argument("--output_plot", default="artifacts/pointwise_plddt_regression.png")
+    parser.add_argument("--output_plot_50_80", default="artifacts/pointwise_plddt_regression_50_80.png")
     return parser.parse_args()
 
 
@@ -164,6 +165,9 @@ def save_regression_plot(
     pred_fit: Dict[str, float],
     zero_fit: Dict[str, float],
     output_path: str,
+    plddt_min: float,
+    plddt_max: float,
+    title: str,
 ) -> bool:
     try:
         import matplotlib.pyplot as plt
@@ -180,7 +184,7 @@ def save_regression_plot(
     plt.scatter(plddt_np, pred_err_np, s=8, alpha=0.25, label="Predicted error", color="#1f77b4")
     plt.scatter(plddt_np, zero_err_np, s=8, alpha=0.25, label="Zero-displacement error", color="#ff7f0e")
 
-    x_line = torch.linspace(0.0, 100.0, 200, dtype=torch.float64)
+    x_line = torch.linspace(plddt_min, plddt_max, 200, dtype=torch.float64)
     if not (math.isnan(pred_fit["slope"]) or math.isnan(pred_fit["intercept"])):
         y_pred_line = pred_fit["slope"] * x_line + pred_fit["intercept"]
         plt.plot(x_line.numpy(), y_pred_line.numpy(), color="#1f77b4", linewidth=2.0, label="Predicted regression")
@@ -198,8 +202,8 @@ def save_regression_plot(
 
     plt.xlabel("pLDDT")
     plt.ylabel("Per-residue Euclidean error")
-    plt.title("Point-wise pLDDT vs. coordinate error")
-    plt.xlim(0, 100)
+    plt.title(title)
+    plt.xlim(plddt_min, plddt_max)
     plt.grid(alpha=0.2)
     plt.legend()
     plt.tight_layout()
@@ -207,7 +211,7 @@ def save_regression_plot(
     plot_dir = os.path.dirname(output_path)
     if plot_dir:
         os.makedirs(plot_dir, exist_ok=True)
-    plt.savefig(output_path, dpi=200)
+    plt.savefig(output_path, dpi=300)
     plt.close()
     return True
 
@@ -326,12 +330,40 @@ def main():
         for p, pe, ze in zip(plddt.tolist(), pred_err.tolist(), zero_err.tolist()):
             writer.writerow([p, pe, ze])
 
-    plot_saved = save_regression_plot(plddt, pred_err, zero_err, pred_fit, zero_fit, args.output_plot)
+    plot_saved = save_regression_plot(
+        plddt,
+        pred_err,
+        zero_err,
+        pred_fit,
+        zero_fit,
+        args.output_plot,
+        plddt_min=0.0,
+        plddt_max=100.0,
+        title="Point-wise pLDDT vs. coordinate error",
+    )
+
+    focus_plot_saved = False
+    if focus_mask.any():
+        focus_pred_fit = linear_fit(plddt[focus_mask], pred_err[focus_mask])
+        focus_zero_fit = linear_fit(plddt[focus_mask], zero_err[focus_mask])
+        focus_plot_saved = save_regression_plot(
+            plddt[focus_mask],
+            pred_err[focus_mask],
+            zero_err[focus_mask],
+            focus_pred_fit,
+            focus_zero_fit,
+            args.output_plot_50_80,
+            plddt_min=50.0,
+            plddt_max=80.0,
+            title="Point-wise pLDDT vs. coordinate error (50-80)",
+        )
 
     print(json.dumps(payload, indent=2, allow_nan=True))
     print(f"Saved pointwise samples to: {args.output_csv}")
     if plot_saved:
         print(f"Saved regression plot to: {args.output_plot}")
+    if focus_plot_saved:
+        print(f"Saved 50-80 regression plot to: {args.output_plot_50_80}")
 
 
 if __name__ == "__main__":
