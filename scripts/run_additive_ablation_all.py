@@ -27,10 +27,12 @@ class ExperimentSpec:
 
 BASELINE_OFF_OVERRIDES: dict[str, float] = {
     "model.disp_focus_weight": 1.0,
+    "model.disp_over_max_weight": 1.0,
     "model.lambda_cos": 0.0,
     "model.lambda_mag": 0.0,
     "model.lambda_clash": 0.0,
     "model.lambda_high_plddt_l2": 0.0,
+    "model.lambda_low_plddt_l2": 0.0,
     "model.plddt_gate_start": 100.0,
     "model.plddt_gate_end": 100.0,
 }
@@ -51,6 +53,7 @@ def additive_matrix() -> list[ExperimentSpec]:
             purpose="Restore only spatial focus for 1-5Å (focus=1.25).",
             overrides={
                 "model.disp_focus_weight": 1.25,
+                "model.disp_over_max_weight": 0.5,
             },
         ),
         ExperimentSpec(
@@ -73,9 +76,10 @@ def additive_matrix() -> list[ExperimentSpec]:
         ExperimentSpec(
             run_id="D1",
             tag="+plddt",
-            purpose="Restore only pLDDT gating/L2 regularization (start=80, end=100, lambda=0.5).",
+            purpose="Restore only pLDDT gating/L2 regularization (start=80, end=100, high_lambda=0.75, low_lambda=0.5).",
             overrides={
                 "model.lambda_high_plddt_l2": 0.75,
+                "model.lambda_low_plddt_l2": 0.5,
                 "model.plddt_gate_start": 80.0,
                 "model.plddt_gate_end": 100.0,
             },
