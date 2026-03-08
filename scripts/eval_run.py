@@ -34,7 +34,7 @@ def main():
     with torch.no_grad():
         for batch in loader:
             batch = batch.to(args.device)
-            pred = model(batch)
+            pred = model.predict_displacement(batch)
             s = torch.norm(pred - batch.y, dim=-1)
             scores.extend(s.detach().cpu().numpy().tolist())
 
