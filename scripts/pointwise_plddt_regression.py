@@ -136,6 +136,27 @@ def summarize_by_bins(plddt: torch.Tensor, values: torch.Tensor, bins: int) -> L
     return out
 
 
+def build_analysis_block(
+    plddt: torch.Tensor, pred_err: torch.Tensor, zero_err: torch.Tensor, bins: int
+) -> Dict[str, object]:
+    pred_fit = linear_fit(plddt, pred_err)
+    zero_fit = linear_fit(plddt, zero_err)
+    return {
+        "num_points": int(plddt.numel()),
+        "predicted_vs_plddt": {
+            "pearson": safe_corrcoef(plddt, pred_err),
+            "spearman": spearman_corr(plddt, pred_err),
+            **pred_fit,
+        },
+        "zero_displacement_vs_plddt": {
+            "pearson": safe_corrcoef(plddt, zero_err),
+            "spearman": spearman_corr(plddt, zero_err),
+            **zero_fit,
+        },
+        "predicted_error_by_plddt_bins": summarize_by_bins(plddt, pred_err, bins),
+        "zero_error_by_plddt_bins": summarize_by_bins(plddt, zero_err, bins),
+    }
+
 def save_regression_plot(
     plddt: torch.Tensor,
     pred_err: torch.Tensor,
@@ -242,6 +263,32 @@ def main():
     pred_err = torch.cat(pred_err_all)
     zero_err = torch.cat(zero_err_all)
 
+    full_analysis = build_analysis_block(plddt, pred_err, zero_err, args.bins)
+
+    focus_mask = (plddt >= 50.0) & (plddt <= 80.0)
+    if focus_mask.any():
+        focus_analysis = build_analysis_block(
+            plddt[focus_mask],
+            pred_err[focus_mask],
+            zero_err[focus_mask],
+            args.bins,
+        )
+    else:
+        nan_fit = {
+            "pearson": float("nan"),
+            "spearman": float("nan"),
+            "slope": float("nan"),
+            "intercept": float("nan"),
+            "r2": float("nan"),
+        }
+        focus_analysis = {
+            "num_points": 0,
+            "predicted_vs_plddt": dict(nan_fit),
+            "zero_displacement_vs_plddt": dict(nan_fit),
+            "predicted_error_by_plddt_bins": [],
+            "zero_error_by_plddt_bins": [],
+        }
+
     pred_fit = linear_fit(plddt, pred_err)
     zero_fit = linear_fit(plddt, zero_err)
 
@@ -249,19 +296,19 @@ def main():
         "checkpoint": args.ckpt,
         "data_dir": args.data_dir,
         "split": args.split,
-        "num_points": int(plddt.numel()),
-        "predicted_vs_plddt": {
-            "pearson": safe_corrcoef(plddt, pred_err),
-            "spearman": spearman_corr(plddt, pred_err),
-            **pred_fit,
+        "num_points": full_analysis["num_points"],
+        "predicted_vs_plddt": full_analysis["predicted_vs_plddt"],
+        "zero_displacement_vs_plddt": full_analysis["zero_displacement_vs_plddt"],
+        "predicted_error_by_plddt_bins": full_analysis["predicted_error_by_plddt_bins"],
+        "zero_error_by_plddt_bins": full_analysis["zero_error_by_plddt_bins"],
+        "plddt_50_80_analysis": {
+            "range": [50.0, 80.0],
+            "num_points": focus_analysis["num_points"],
+            "predicted_vs_plddt": focus_analysis["predicted_vs_plddt"],
+            "zero_displacement_vs_plddt": focus_analysis["zero_displacement_vs_plddt"],
+            "predicted_error_by_plddt_bins": focus_analysis["predicted_error_by_plddt_bins"],
+            "zero_error_by_plddt_bins": focus_analysis["zero_error_by_plddt_bins"],
         },
-        "zero_displacement_vs_plddt": {
-            "pearson": safe_corrcoef(plddt, zero_err),
-            "spearman": spearman_corr(plddt, zero_err),
-            **zero_fit,
-        },
-        "predicted_error_by_plddt_bins": summarize_by_bins(plddt, pred_err, args.bins),
-        "zero_error_by_plddt_bins": summarize_by_bins(plddt, zero_err, args.bins),
     }
 
     out_dir = os.path.dirname(args.output_json)
