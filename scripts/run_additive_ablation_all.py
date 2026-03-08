@@ -62,7 +62,6 @@ def additive_matrix() -> list[ExperimentSpec]:
                 "model.lambda_mag": 0.003,
             },
         ),
-        '''
         ExperimentSpec(
             run_id="E1",
             tag="+clash",
@@ -71,7 +70,6 @@ def additive_matrix() -> list[ExperimentSpec]:
                 "model.lambda_clash": 0.05,
             },
         ),
-        '''
         ExperimentSpec(
             run_id="D1",
             tag="+plddt",
