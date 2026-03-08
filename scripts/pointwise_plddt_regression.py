@@ -35,6 +35,8 @@ def parse_args():
     parser.add_argument(
         "--output_pairwise_plot_50_80", default="artifacts/pointwise_error_pairwise_regression_50_80.png"
     )
+    parser.add_argument("--focus_plddt_min", type=float, default=50.0)
+    parser.add_argument("--focus_plddt_max", type=float, default=80.0)
     return parser.parse_args()
 
 
@@ -236,6 +238,7 @@ def save_pairwise_error_plot(
     pairwise_fit: Dict[str, float],
     output_path: str,
     title: str,
+    show_identity_line: bool = False,
 ) -> bool:
     try:
         import matplotlib.pyplot as plt
@@ -257,6 +260,12 @@ def save_pairwise_error_plot(
         y_line = pairwise_fit["slope"] * x_line + pairwise_fit["intercept"]
         plt.plot(x_line.numpy(), y_line.numpy(), color="#d62728", linewidth=2.0, label="Regression")
 
+    if show_identity_line:
+        diagonal_min = min(float(zero_err.min().item()), float(pred_err.min().item()))
+        diagonal_max = max(float(zero_err.max().item()), float(pred_err.max().item()))
+        diagonal = torch.linspace(diagonal_min, diagonal_max, 200, dtype=torch.float64)
+        plt.plot(diagonal.numpy(), diagonal.numpy(), color="#7f7f7f", linewidth=1.5, linestyle=":", label="y=x")
+
     plt.xlabel("Zero-displacement Euclidean error")
     plt.ylabel("Predicted Euclidean error")
     plt.title(title)
@@ -274,6 +283,8 @@ def save_pairwise_error_plot(
 
 def main():
     args = parse_args()
+    if args.focus_plddt_min > args.focus_plddt_max:
+        raise ValueError("focus_plddt_min cannot be greater than focus_plddt_max.")
 
     dm = EvoPointDataModule(
         data_dir=args.data_dir,
@@ -326,7 +337,7 @@ def main():
     full_analysis = build_analysis_block(plddt, pred_err, zero_err, args.bins)
     full_pairwise_error_analysis = build_pairwise_error_analysis(zero_err, pred_err)
 
-    focus_mask = (plddt >= 50.0) & (plddt <= 80.0)
+    focus_mask = (plddt >= args.focus_plddt_min) & (plddt <= args.focus_plddt_max)
     if focus_mask.any():
         focus_analysis = build_analysis_block(
             plddt[focus_mask],
@@ -366,7 +377,7 @@ def main():
         "zero_error_by_plddt_bins": full_analysis["zero_error_by_plddt_bins"],
         "predicted_vs_zero_displacement_error": full_pairwise_error_analysis,
         "plddt_50_80_analysis": {
-            "range": [50.0, 80.0],
+            "range": [args.focus_plddt_min, args.focus_plddt_max],
             "num_points": focus_analysis["num_points"],
             "predicted_vs_plddt": focus_analysis["predicted_vs_plddt"],
             "zero_displacement_vs_plddt": focus_analysis["zero_displacement_vs_plddt"],
@@ -397,6 +408,7 @@ def main():
         full_pairwise_error_analysis,
         args.output_pairwise_plot,
         title="Point-wise zero-displacement error vs. predicted error",
+        show_identity_line=True,
     )
 
     plot_saved = save_regression_plot(
@@ -421,7 +433,11 @@ def main():
             pred_err[focus_mask],
             focus_pairwise_error_analysis,
             args.output_pairwise_plot_50_80,
-            title="Point-wise zero-displacement error vs. predicted error (pLDDT 50-80)",
+            title=(
+                "Point-wise zero-displacement error vs. predicted error "
+                f"(pLDDT {args.focus_plddt_min:g}-{args.focus_plddt_max:g})"
+            ),
+            show_identity_line=True,
         )
 
         focus_plot_saved = save_regression_plot(
@@ -431,9 +447,12 @@ def main():
             focus_pred_fit,
             focus_zero_fit,
             args.output_plot_50_80,
-            plddt_min=50.0,
-            plddt_max=80.0,
-            title="Point-wise pLDDT vs. coordinate error (50-80)",
+            plddt_min=args.focus_plddt_min,
+            plddt_max=args.focus_plddt_max,
+            title=(
+                "Point-wise pLDDT vs. coordinate error "
+                f"({args.focus_plddt_min:g}-{args.focus_plddt_max:g})"
+            ),
         )
 
     print(json.dumps(payload, indent=2, allow_nan=True))
@@ -443,9 +462,15 @@ def main():
     if plot_saved:
         print(f"Saved regression plot to: {args.output_plot}")
     if focus_pairwise_plot_saved:
-        print(f"Saved 50-80 pairwise error regression plot to: {args.output_pairwise_plot_50_80}")
+        print(
+            "Saved focused pairwise error regression plot "
+            f"({args.focus_plddt_min:g}-{args.focus_plddt_max:g}) to: {args.output_pairwise_plot_50_80}"
+        )
     if focus_plot_saved:
-        print(f"Saved 50-80 regression plot to: {args.output_plot_50_80}")
+        print(
+            "Saved focused pLDDT regression plot "
+            f"({args.focus_plddt_min:g}-{args.focus_plddt_max:g}) to: {args.output_plot_50_80}"
+        )
 
 
 if __name__ == "__main__":
