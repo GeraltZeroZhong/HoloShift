@@ -30,6 +30,7 @@ class EvoPointLitModule(pl.LightningModule):
         plddt_gate_end: float = 100.0,
         lambda_high_plddt_l2: float = 0.1,
         lr_warmup_epochs: int = 10,
+        inference_disp_multiplier: float = 2.0,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -113,6 +114,11 @@ class EvoPointLitModule(pl.LightningModule):
     def forward(self, batch):
         _, pos_updated = self.backbone(batch.x, batch.pos, batch.edge_index, batch.edge_attr)
         return pos_updated - batch.pos
+
+    def predict_displacement(self, batch):
+        """Return final displacement in real coordinate space for inference/export usage."""
+        delta_pred = self.forward(batch)
+        return delta_pred * self.coord_scale * self.hparams.inference_disp_multiplier
 
     def _clash_penalty(self, pos_pred: torch.Tensor, edge_index: torch.Tensor):
         if edge_index.numel() == 0:
@@ -283,9 +289,11 @@ class EvoPointLitModule(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         self._shared_step(batch, "val")
 
+    def predict_step(self, batch, batch_idx, dataloader_idx=0):
+        return self.predict_displacement(batch)
+
     def test_step(self, batch, batch_idx):
-        delta_pred = self.forward(batch)
-        delta_pred_real = delta_pred * self.coord_scale
+        delta_pred_real = self.predict_displacement(batch)
         sq_error = (delta_pred_real - batch.y) ** 2
 
         loss_mse_real = F.mse_loss(delta_pred_real, batch.y)

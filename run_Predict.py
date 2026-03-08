@@ -46,7 +46,7 @@ def main():
     qhat = float(stats["qhat"])
 
     with torch.no_grad():
-        delta = model(data)
+        delta = model.predict_displacement(data)
     pred_norm = torch.norm(delta, dim=-1).detach().cpu().numpy()
 
     reject = qhat > args.reject_threshold
