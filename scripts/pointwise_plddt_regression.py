@@ -158,6 +158,16 @@ def build_analysis_block(
         "zero_error_by_plddt_bins": summarize_by_bins(plddt, zero_err, bins),
     }
 
+
+def build_pairwise_error_analysis(x_err: torch.Tensor, y_err: torch.Tensor) -> Dict[str, float]:
+    fit = linear_fit(x_err, y_err)
+    return {
+        "pearson": safe_corrcoef(x_err, y_err),
+        "spearman": spearman_corr(x_err, y_err),
+        **fit,
+    }
+
+
 def save_regression_plot(
     plddt: torch.Tensor,
     pred_err: torch.Tensor,
@@ -268,6 +278,7 @@ def main():
     zero_err = torch.cat(zero_err_all)
 
     full_analysis = build_analysis_block(plddt, pred_err, zero_err, args.bins)
+    full_pairwise_error_analysis = build_pairwise_error_analysis(zero_err, pred_err)
 
     focus_mask = (plddt >= 50.0) & (plddt <= 80.0)
     if focus_mask.any():
@@ -277,6 +288,7 @@ def main():
             zero_err[focus_mask],
             args.bins,
         )
+        focus_pairwise_error_analysis = build_pairwise_error_analysis(zero_err[focus_mask], pred_err[focus_mask])
     else:
         nan_fit = {
             "pearson": float("nan"),
@@ -292,6 +304,7 @@ def main():
             "predicted_error_by_plddt_bins": [],
             "zero_error_by_plddt_bins": [],
         }
+        focus_pairwise_error_analysis = dict(nan_fit)
 
     pred_fit = linear_fit(plddt, pred_err)
     zero_fit = linear_fit(plddt, zero_err)
@@ -305,6 +318,7 @@ def main():
         "zero_displacement_vs_plddt": full_analysis["zero_displacement_vs_plddt"],
         "predicted_error_by_plddt_bins": full_analysis["predicted_error_by_plddt_bins"],
         "zero_error_by_plddt_bins": full_analysis["zero_error_by_plddt_bins"],
+        "predicted_vs_zero_displacement_error": full_pairwise_error_analysis,
         "plddt_50_80_analysis": {
             "range": [50.0, 80.0],
             "num_points": focus_analysis["num_points"],
@@ -312,6 +326,7 @@ def main():
             "zero_displacement_vs_plddt": focus_analysis["zero_displacement_vs_plddt"],
             "predicted_error_by_plddt_bins": focus_analysis["predicted_error_by_plddt_bins"],
             "zero_error_by_plddt_bins": focus_analysis["zero_error_by_plddt_bins"],
+            "predicted_vs_zero_displacement_error": focus_pairwise_error_analysis,
         },
     }
 
