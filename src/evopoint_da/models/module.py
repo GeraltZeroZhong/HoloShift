@@ -20,6 +20,7 @@ class EvoPointLitModule(pl.LightningModule):
         disp_focus_min: float = 1.0,
         disp_focus_max: float = 5.0,
         disp_focus_weight: float = 1.5,
+        disp_over_max_weight: float = 0.5,
         flexible_threshold: float = 1.0,
         lambda_cos: float = 0.5,
         lambda_mag: float = 1.0,
@@ -29,6 +30,7 @@ class EvoPointLitModule(pl.LightningModule):
         plddt_gate_start: float = 90.0,
         plddt_gate_end: float = 100.0,
         lambda_high_plddt_l2: float = 0.1,
+        lambda_low_plddt_l2: float = 0.5,
         lr_warmup_epochs: int = 10,
         inference_disp_multiplier: float = 2.0,
     ):
@@ -211,6 +213,7 @@ class EvoPointLitModule(pl.LightningModule):
     def _shared_step(self, batch, stage: str):
         delta_pred = self.forward(batch)
         high_plddt_l2 = torch.zeros((), device=self.device, dtype=delta_pred.dtype)
+        low_plddt_l2 = torch.zeros((), device=self.device, dtype=delta_pred.dtype)
 
         def _warmup_factor(warmup_epochs: int) -> float:
             if warmup_epochs <= 0:
@@ -235,6 +238,10 @@ class EvoPointLitModule(pl.LightningModule):
             if high_plddt_mask.any():
                 high_plddt_l2 = (delta_pred[high_plddt_mask] ** 2).mean()
 
+            low_plddt_mask = plddt < gate_start
+            if low_plddt_mask.any():
+                low_plddt_l2 = (delta_pred[low_plddt_mask] ** 2).mean()
+
         target_norm = batch.y / self.coord_scale
         target_mag_real = torch.norm(batch.y, dim=-1)
         mse_weights = torch.ones_like(target_mag_real)
@@ -244,6 +251,8 @@ class EvoPointLitModule(pl.LightningModule):
         in_focus = (target_mag_real >= focus_min) & (target_mag_real < focus_max)
         focus_weights = torch.ones_like(target_mag_real)
         focus_weights[in_focus] = self.hparams.disp_focus_weight
+        over_max = target_mag_real >= focus_max
+        focus_weights[over_max] = self.hparams.disp_over_max_weight
         mse_weights = mse_weights * (1.0 + focus_warmup * (focus_weights - 1.0))
 
         eps = 1e-8
@@ -280,6 +289,7 @@ class EvoPointLitModule(pl.LightningModule):
             + lambda_mag_eff * loss_mag
             + self.hparams.lambda_clash * loss_clash
             + self.hparams.lambda_high_plddt_l2 * high_plddt_l2
+            + self.hparams.lambda_low_plddt_l2 * low_plddt_l2
         )
         
         batch_size = getattr(batch, "num_graphs", None)
@@ -289,6 +299,7 @@ class EvoPointLitModule(pl.LightningModule):
         self.log(f"{stage}/loss", loss, prog_bar=(stage != "train"), batch_size=batch_size)
         self.log(f"{stage}/loss_cos", loss_cos, batch_size=batch_size) 
         self.log(f"{stage}/loss_high_plddt_l2", high_plddt_l2, batch_size=batch_size)
+        self.log(f"{stage}/loss_low_plddt_l2", low_plddt_l2, batch_size=batch_size)
         self.log(f"{stage}/loss_components/weighted_node", loss_mse, batch_size=batch_size)
         self.log(f"{stage}/loss_components/cos", loss_cos, batch_size=batch_size)
         self.log(f"{stage}/loss_components/magnitude", loss_mag, batch_size=batch_size)
@@ -299,6 +310,7 @@ class EvoPointLitModule(pl.LightningModule):
         self.log(f"{stage}/weights/focus_warmup", focus_warmup, batch_size=batch_size)
         self.log(f"{stage}/loss_components/clash", loss_clash, batch_size=batch_size)
         self.log(f"{stage}/loss_components/high_plddt_l2", high_plddt_l2, batch_size=batch_size)
+        self.log(f"{stage}/loss_components/low_plddt_l2", low_plddt_l2, batch_size=batch_size)
         mse_real = F.mse_loss(delta_pred_real, batch.y)
         self.log(f"{stage}/loss_mse", mse_real, batch_size=batch_size)
         self.log(f"{stage}/pred_magnitude", torch.norm(delta_pred_real, dim=-1).mean(), batch_size=batch_size)
