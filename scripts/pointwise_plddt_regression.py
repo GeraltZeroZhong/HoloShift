@@ -31,6 +31,10 @@ def parse_args():
     parser.add_argument("--output_csv", default="artifacts/pointwise_plddt_samples.csv")
     parser.add_argument("--output_plot", default="artifacts/pointwise_plddt_regression.png")
     parser.add_argument("--output_plot_50_80", default="artifacts/pointwise_plddt_regression_50_80.png")
+    parser.add_argument("--output_pairwise_plot", default="artifacts/pointwise_error_pairwise_regression.png")
+    parser.add_argument(
+        "--output_pairwise_plot_50_80", default="artifacts/pointwise_error_pairwise_regression_50_80.png"
+    )
     return parser.parse_args()
 
 
@@ -158,6 +162,16 @@ def build_analysis_block(
         "zero_error_by_plddt_bins": summarize_by_bins(plddt, zero_err, bins),
     }
 
+
+def build_pairwise_error_analysis(x_err: torch.Tensor, y_err: torch.Tensor) -> Dict[str, float]:
+    fit = linear_fit(x_err, y_err)
+    return {
+        "pearson": safe_corrcoef(x_err, y_err),
+        "spearman": spearman_corr(x_err, y_err),
+        **fit,
+    }
+
+
 def save_regression_plot(
     plddt: torch.Tensor,
     pred_err: torch.Tensor,
@@ -204,6 +218,48 @@ def save_regression_plot(
     plt.ylabel("Per-residue Euclidean error")
     plt.title(title)
     plt.xlim(plddt_min, plddt_max)
+    plt.grid(alpha=0.2)
+    plt.legend()
+    plt.tight_layout()
+
+    plot_dir = os.path.dirname(output_path)
+    if plot_dir:
+        os.makedirs(plot_dir, exist_ok=True)
+    plt.savefig(output_path, dpi=300)
+    plt.close()
+    return True
+
+
+def save_pairwise_error_plot(
+    zero_err: torch.Tensor,
+    pred_err: torch.Tensor,
+    pairwise_fit: Dict[str, float],
+    output_path: str,
+    title: str,
+) -> bool:
+    try:
+        import matplotlib.pyplot as plt
+    except ModuleNotFoundError:
+        print("matplotlib is not installed; skipping pairwise error plot generation.", file=sys.stderr)
+        return False
+
+    plt.figure(figsize=(7, 7))
+
+    zero_err_np = zero_err.cpu().numpy()
+    pred_err_np = pred_err.cpu().numpy()
+    plt.scatter(zero_err_np, pred_err_np, s=8, alpha=0.25, color="#2ca02c")
+
+    x_min = float(zero_err.min().item())
+    x_max = float(zero_err.max().item())
+    x_line = torch.linspace(x_min, x_max, 200, dtype=torch.float64)
+
+    if not (math.isnan(pairwise_fit["slope"]) or math.isnan(pairwise_fit["intercept"])):
+        y_line = pairwise_fit["slope"] * x_line + pairwise_fit["intercept"]
+        plt.plot(x_line.numpy(), y_line.numpy(), color="#d62728", linewidth=2.0, label="Regression")
+
+    plt.xlabel("Zero-displacement Euclidean error")
+    plt.ylabel("Predicted Euclidean error")
+    plt.title(title)
     plt.grid(alpha=0.2)
     plt.legend()
     plt.tight_layout()
@@ -268,6 +324,7 @@ def main():
     zero_err = torch.cat(zero_err_all)
 
     full_analysis = build_analysis_block(plddt, pred_err, zero_err, args.bins)
+    full_pairwise_error_analysis = build_pairwise_error_analysis(zero_err, pred_err)
 
     focus_mask = (plddt >= 50.0) & (plddt <= 80.0)
     if focus_mask.any():
@@ -277,6 +334,7 @@ def main():
             zero_err[focus_mask],
             args.bins,
         )
+        focus_pairwise_error_analysis = build_pairwise_error_analysis(zero_err[focus_mask], pred_err[focus_mask])
     else:
         nan_fit = {
             "pearson": float("nan"),
@@ -292,6 +350,7 @@ def main():
             "predicted_error_by_plddt_bins": [],
             "zero_error_by_plddt_bins": [],
         }
+        focus_pairwise_error_analysis = dict(nan_fit)
 
     pred_fit = linear_fit(plddt, pred_err)
     zero_fit = linear_fit(plddt, zero_err)
@@ -305,6 +364,7 @@ def main():
         "zero_displacement_vs_plddt": full_analysis["zero_displacement_vs_plddt"],
         "predicted_error_by_plddt_bins": full_analysis["predicted_error_by_plddt_bins"],
         "zero_error_by_plddt_bins": full_analysis["zero_error_by_plddt_bins"],
+        "predicted_vs_zero_displacement_error": full_pairwise_error_analysis,
         "plddt_50_80_analysis": {
             "range": [50.0, 80.0],
             "num_points": focus_analysis["num_points"],
@@ -312,6 +372,7 @@ def main():
             "zero_displacement_vs_plddt": focus_analysis["zero_displacement_vs_plddt"],
             "predicted_error_by_plddt_bins": focus_analysis["predicted_error_by_plddt_bins"],
             "zero_error_by_plddt_bins": focus_analysis["zero_error_by_plddt_bins"],
+            "predicted_vs_zero_displacement_error": focus_pairwise_error_analysis,
         },
     }
 
@@ -330,6 +391,14 @@ def main():
         for p, pe, ze in zip(plddt.tolist(), pred_err.tolist(), zero_err.tolist()):
             writer.writerow([p, pe, ze])
 
+    pairwise_plot_saved = save_pairwise_error_plot(
+        zero_err,
+        pred_err,
+        full_pairwise_error_analysis,
+        args.output_pairwise_plot,
+        title="Point-wise zero-displacement error vs. predicted error",
+    )
+
     plot_saved = save_regression_plot(
         plddt,
         pred_err,
@@ -343,9 +412,18 @@ def main():
     )
 
     focus_plot_saved = False
+    focus_pairwise_plot_saved = False
     if focus_mask.any():
         focus_pred_fit = linear_fit(plddt[focus_mask], pred_err[focus_mask])
         focus_zero_fit = linear_fit(plddt[focus_mask], zero_err[focus_mask])
+        focus_pairwise_plot_saved = save_pairwise_error_plot(
+            zero_err[focus_mask],
+            pred_err[focus_mask],
+            focus_pairwise_error_analysis,
+            args.output_pairwise_plot_50_80,
+            title="Point-wise zero-displacement error vs. predicted error (pLDDT 50-80)",
+        )
+
         focus_plot_saved = save_regression_plot(
             plddt[focus_mask],
             pred_err[focus_mask],
@@ -360,8 +438,12 @@ def main():
 
     print(json.dumps(payload, indent=2, allow_nan=True))
     print(f"Saved pointwise samples to: {args.output_csv}")
+    if pairwise_plot_saved:
+        print(f"Saved pairwise error regression plot to: {args.output_pairwise_plot}")
     if plot_saved:
         print(f"Saved regression plot to: {args.output_plot}")
+    if focus_pairwise_plot_saved:
+        print(f"Saved 50-80 pairwise error regression plot to: {args.output_pairwise_plot_50_80}")
     if focus_plot_saved:
         print(f"Saved 50-80 regression plot to: {args.output_plot_50_80}")
 
