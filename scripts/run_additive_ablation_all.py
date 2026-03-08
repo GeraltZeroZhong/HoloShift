@@ -25,14 +25,12 @@ class ExperimentSpec:
     overrides: dict[str, float] = field(default_factory=dict)
 
 
-# A0: fully disabled baseline for the listed loss groups.
 BASELINE_OFF_OVERRIDES: dict[str, float] = {
     "model.disp_focus_weight": 1.0,
     "model.lambda_cos": 0.0,
     "model.lambda_mag": 0.0,
     "model.lambda_clash": 0.0,
     "model.lambda_high_plddt_l2": 0.0,
-    # Gate start=end=100 keeps uncertainty gate ~=1.0 for typical pLDDT in [0, 100].
     "model.plddt_gate_start": 100.0,
     "model.plddt_gate_end": 100.0,
 }
@@ -48,7 +46,7 @@ def additive_matrix() -> list[ExperimentSpec]:
         ),
 
         ExperimentSpec(
-            run_id="D1",
+            run_id="B1",
             tag="+focus",
             purpose="Restore only spatial focus for 1-5Å (focus=1.25).",
             overrides={
@@ -56,28 +54,30 @@ def additive_matrix() -> list[ExperimentSpec]:
             },
         ),
         ExperimentSpec(
-            run_id="E1",
+            run_id="C1",
             tag="+aux",
-            purpose="Restore only geometric auxiliary losses (lambda_cos=1.0, lambda_mag=1.0).",
+            purpose="Restore only geometric auxiliary losses (lambda_cos=0.06, lambda_mag=0.003).",
             overrides={
-                "model.lambda_cos": 1.0,
-                "model.lambda_mag": 1.0,
+                "model.lambda_cos": 0.06,
+                "model.lambda_mag": 0.003,
             },
         ),
+        '''
         ExperimentSpec(
-            run_id="F1",
+            run_id="E1",
             tag="+clash",
             purpose="Restore only physical anti-clash regularization (lambda_clash=0.05).",
             overrides={
                 "model.lambda_clash": 0.05,
             },
         ),
+        '''
         ExperimentSpec(
-            run_id="G1",
+            run_id="D1",
             tag="+plddt",
             purpose="Restore only pLDDT gating/L2 regularization (start=80, end=100, lambda=0.5).",
             overrides={
-                "model.lambda_high_plddt_l2": 0.5,
+                "model.lambda_high_plddt_l2": 0.75,
                 "model.plddt_gate_start": 80.0,
                 "model.plddt_gate_end": 100.0,
             },
