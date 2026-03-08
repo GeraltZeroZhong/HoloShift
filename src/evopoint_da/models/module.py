@@ -289,6 +289,9 @@ class EvoPointLitModule(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         self._shared_step(batch, "val")
 
+    def predict_step(self, batch, batch_idx, dataloader_idx=0):
+        return self.predict_displacement(batch)
+
     def test_step(self, batch, batch_idx):
         delta_pred_real = self.predict_displacement(batch)
         sq_error = (delta_pred_real - batch.y) ** 2
