@@ -29,6 +29,7 @@ class EvoPointLitModule(pl.LightningModule):
         plddt_gate_start: float = 90.0,
         plddt_gate_end: float = 100.0,
         lambda_high_plddt_l2: float = 0.1,
+        lr_warmup_epochs: int = 10,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -390,5 +391,27 @@ class EvoPointLitModule(pl.LightningModule):
 
     def configure_optimizers(self):
         optimizer = torch.optim.AdamW(self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=100)
+
+        warmup_epochs = max(0, int(self.hparams.lr_warmup_epochs))
+        total_epochs = int(getattr(self.trainer, "max_epochs", 100))
+        if total_epochs <= 0:
+            total_epochs = 100
+
+        if warmup_epochs > 0:
+            warmup = torch.optim.lr_scheduler.LinearLR(
+                optimizer,
+                start_factor=1e-8,
+                end_factor=1.0,
+                total_iters=warmup_epochs,
+            )
+            cosine_epochs = max(1, total_epochs - warmup_epochs)
+            cosine = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cosine_epochs)
+            scheduler = torch.optim.lr_scheduler.SequentialLR(
+                optimizer,
+                schedulers=[warmup, cosine],
+                milestones=[warmup_epochs],
+            )
+        else:
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(1, total_epochs))
+
         return [optimizer], [scheduler]

@@ -16,6 +16,7 @@ disp_focus_weight: 1.5
 flexible_threshold: 1.0
 lambda_cos: 0.06
 lambda_mag: 0.003
+lr_warmup_epochs: 10
 cos_warmup_epochs: 10
 mag_warmup_epochs: 10
 focus_warmup_epochs: 10
