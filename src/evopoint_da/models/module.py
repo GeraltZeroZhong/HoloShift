@@ -155,6 +155,59 @@ class EvoPointLitModule(pl.LightningModule):
                 self.log(f"{stage}/disp_group/{suffix}_rmsd", torch.sqrt(mse), batch_size=batch_size)
                 self.log(f"{stage}/disp_group/{suffix}_mae", mae, batch_size=batch_size)
 
+    def _log_plddt_bin_metrics(
+        self,
+        stage: str,
+        plddt: torch.Tensor,
+        delta_pred_real: torch.Tensor,
+        y_true: torch.Tensor,
+        baseline_delta: torch.Tensor | None,
+        batch_size: int | None,
+    ):
+        # pLDDT bins on raw pLDDT scale: [0,60), [60,70), [70,80), [80,90), [90,100]
+        plddt_ranges = [(0, 60), (60, 70), (70, 80), (80, 90), (90, 100)]
+        for lower, upper in plddt_ranges:
+            if upper < 100:
+                plddt_mask = (plddt >= float(lower)) & (plddt < float(upper))
+            else:
+                plddt_mask = (plddt >= float(lower)) & (plddt <= float(upper))
+
+            count = int(plddt_mask.sum().item())
+            self.log(
+                f"{stage}/plddt_bins/{lower}to{upper}/count",
+                torch.tensor(float(count), device=self.device),
+                on_step=False,
+                on_epoch=True,
+                reduce_fx=torch.sum,
+                batch_size=batch_size,
+            )
+
+            if count > 0:
+                bin_mse = F.mse_loss(delta_pred_real[plddt_mask], y_true[plddt_mask])
+                bin_mae = F.l1_loss(delta_pred_real[plddt_mask], y_true[plddt_mask])
+                self.log(f"{stage}/plddt_bins/{lower}to{upper}/mse", bin_mse, batch_size=batch_size)
+                self.log(f"{stage}/plddt_bins/{lower}to{upper}/rmsd", torch.sqrt(bin_mse), batch_size=batch_size)
+                self.log(f"{stage}/plddt_bins/{lower}to{upper}/mae", bin_mae, batch_size=batch_size)
+
+                if baseline_delta is not None:
+                    baseline_bin_mse = F.mse_loss(baseline_delta[plddt_mask], y_true[plddt_mask])
+                    baseline_bin_mae = F.l1_loss(baseline_delta[plddt_mask], y_true[plddt_mask])
+                    self.log(
+                        f"{stage}/baseline_plddt_bins/{lower}to{upper}/mse",
+                        baseline_bin_mse,
+                        batch_size=batch_size,
+                    )
+                    self.log(
+                        f"{stage}/baseline_plddt_bins/{lower}to{upper}/rmsd",
+                        torch.sqrt(baseline_bin_mse),
+                        batch_size=batch_size,
+                    )
+                    self.log(
+                        f"{stage}/baseline_plddt_bins/{lower}to{upper}/mae",
+                        baseline_bin_mae,
+                        batch_size=batch_size,
+                    )
+
     def _shared_step(self, batch, stage: str):
         delta_pred = self.forward(batch)
         high_plddt_l2 = torch.zeros((), device=self.device, dtype=delta_pred.dtype)
@@ -255,6 +308,18 @@ class EvoPointLitModule(pl.LightningModule):
 
         gt_disp_mag = torch.norm(batch.y, dim=-1)
         self._log_disp_group_metrics(stage, delta_pred_real, batch.y, gt_disp_mag, batch_size)
+        if hasattr(batch, "plddt") and batch.plddt is not None:
+            plddt = batch.plddt
+            if plddt.dim() > 1:
+                plddt = plddt.squeeze(-1)
+            self._log_plddt_bin_metrics(
+                stage=stage,
+                plddt=plddt,
+                delta_pred_real=delta_pred_real,
+                y_true=batch.y,
+                baseline_delta=None,
+                batch_size=batch_size,
+            )
         if stage == "val":
             disp_1to5_mask = (gt_disp_mag >= 1.0) & (gt_disp_mag < 5.0)
             if disp_1to5_mask.any():
@@ -364,36 +429,19 @@ class EvoPointLitModule(pl.LightningModule):
         )
         self._accumulate_disp_bin("gt5", sq_error, baseline_sq_error, disp_mask_gt5)
 
-        # pLDDT-binned metrics (raw pLDDT scale: 0~100)
+        # pLDDT-binned metrics
         if hasattr(batch, "plddt") and batch.plddt is not None:
             plddt = batch.plddt
             if plddt.dim() > 1:
                 plddt = plddt.squeeze(-1)
-
-            # pLDDT bins: [0,60), [60,70), [70,80), [80,90), [90,100]
-            plddt_ranges = [(0, 60), (60, 70), (70, 80), (80, 90), (90, 100)]
-            for lower, upper in plddt_ranges:
-                if upper < 100:
-                    plddt_mask = (plddt >= float(lower)) & (plddt < float(upper))
-                else:
-                    plddt_mask = (plddt >= float(lower)) & (plddt <= float(upper))
-
-                count = int(plddt_mask.sum().item())
-                self.log(
-                    f"test/plddt_{lower}to{upper}_count",
-                    torch.tensor(float(count), device=self.device),
-                    on_step=False,
-                    on_epoch=True,
-                    reduce_fx=torch.sum,
-                    batch_size=1,
-                )
-                if count > 0:
-                    bin_mse = F.mse_loss(delta_pred_real[plddt_mask], batch.y[plddt_mask])
-                    baseline_bin_mse = F.mse_loss(baseline_delta[plddt_mask], batch.y[plddt_mask])
-                    self.log(f"test/plddt_{lower}to{upper}_mse", bin_mse)
-                    self.log(f"test/plddt_{lower}to{upper}_rmsd", torch.sqrt(bin_mse))
-                    self.log(f"test/baseline_plddt_{lower}to{upper}_mse", baseline_bin_mse)
-                    self.log(f"test/baseline_plddt_{lower}to{upper}_rmsd", torch.sqrt(baseline_bin_mse))
+            self._log_plddt_bin_metrics(
+                stage="test",
+                plddt=plddt,
+                delta_pred_real=delta_pred_real,
+                y_true=batch.y,
+                baseline_delta=baseline_delta,
+                batch_size=1,
+            )
 
         return loss
 
