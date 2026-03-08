@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Run additive/constructive ablation experiments (A0 -> F1).
+"""Run additive/constructive ablation experiments (A0 -> G1, with focus-only weighting).
 
 Each experiment starts from the fully-disabled baseline (A0) and restores exactly
-one logical loss group to its default value.
+one logical loss group to its default value, including pLDDT-related terms.
 
 Usage:
   python scripts/run_additive_ablation_all.py
@@ -27,14 +27,14 @@ class ExperimentSpec:
 
 # A0: fully disabled baseline for the listed loss groups.
 BASELINE_OFF_OVERRIDES: dict[str, float] = {
-    "model.mse_weight_peak": 1.0,
-    "model.mse_weight_min": 1.0,
-    "model.mse_hard_beta": 0.0,
     "model.disp_focus_weight": 1.0,
-    "model.disp_outside_focus_weight": 1.0,
     "model.lambda_cos": 0.0,
     "model.lambda_mag": 0.0,
     "model.lambda_clash": 0.0,
+    "model.lambda_high_plddt_l2": 0.0,
+    # Gate start=end=100 keeps uncertainty gate ~=1.0 for typical pLDDT in [0, 100].
+    "model.plddt_gate_start": 100.0,
+    "model.plddt_gate_end": 100.0,
 }
 
 
@@ -43,33 +43,16 @@ def additive_matrix() -> list[ExperimentSpec]:
         ExperimentSpec(
             run_id="A0",
             tag="baseline",
-            purpose="Vanilla baseline with shaping/hard-mining/focus/aux/clash disabled.",
+            purpose="Vanilla baseline with focus/aux/clash/pLDDT terms disabled.",
             overrides={},
         ),
-        ExperimentSpec(
-            run_id="B1",
-            tag="+shaping",
-            purpose="Restore only MSE shaping (peak=2.0, min=0.5).",
-            overrides={
-                "model.mse_weight_peak": 2.0,
-                "model.mse_weight_min": 0.5,
-            },
-        ),
-        ExperimentSpec(
-            run_id="C1",
-            tag="+hard",
-            purpose="Restore only hard-example mining (beta=3.0).",
-            overrides={
-                "model.mse_hard_beta": 3.0,
-            },
-        ),
+
         ExperimentSpec(
             run_id="D1",
             tag="+focus",
-            purpose="Restore only spatial focus for 1-5Å (focus=1.5, outside=0.9).",
+            purpose="Restore only spatial focus for 1-5Å (focus=1.25).",
             overrides={
-                "model.disp_focus_weight": 1.5,
-                "model.disp_outside_focus_weight": 0.9,
+                "model.disp_focus_weight": 1.25,
             },
         ),
         ExperimentSpec(
@@ -89,11 +72,21 @@ def additive_matrix() -> list[ExperimentSpec]:
                 "model.lambda_clash": 0.05,
             },
         ),
+        ExperimentSpec(
+            run_id="G1",
+            tag="+plddt",
+            purpose="Restore only pLDDT gating/L2 regularization (start=80, end=100, lambda=0.5).",
+            overrides={
+                "model.lambda_high_plddt_l2": 0.5,
+                "model.plddt_gate_start": 80.0,
+                "model.plddt_gate_end": 100.0,
+            },
+        ),
     ]
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run additive loss-group ablations (A0, B1, C1, D1, E1, F1)")
+    parser = argparse.ArgumentParser(description="Run additive loss-group ablations (A0, D1, E1, F1, G1)")
     parser.add_argument("--seed", type=int, default=42, help="Seed used for all runs (default: 42)")
     parser.add_argument(
         "--python",
