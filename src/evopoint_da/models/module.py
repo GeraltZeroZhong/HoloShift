@@ -290,8 +290,7 @@ class EvoPointLitModule(pl.LightningModule):
         self._shared_step(batch, "val")
 
     def test_step(self, batch, batch_idx):
-        delta_pred = self.forward(batch)
-        delta_pred_real = delta_pred * self.coord_scale
+        delta_pred_real = self.predict_displacement(batch)
         sq_error = (delta_pred_real - batch.y) ** 2
 
         loss_mse_real = F.mse_loss(delta_pred_real, batch.y)
