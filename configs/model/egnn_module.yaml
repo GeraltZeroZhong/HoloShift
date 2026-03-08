@@ -20,7 +20,7 @@ lr_warmup_epochs: 10
 cos_warmup_epochs: 10
 mag_warmup_epochs: 10
 focus_warmup_epochs: 10
-plddt_gate_start: 80.0
-plddt_gate_end: 100.0
-lambda_high_plddt_l2: 0.75
+plddt_gate_start: 50.0
+plddt_gate_end: 80.0
+lambda_high_plddt_l2: 1.25
 inference_disp_multiplier: 2.0
