@@ -15,27 +15,16 @@ class EvoPointLitModule(pl.LightningModule):
         lambda_clash: float = 0.1,
         clash_cutoff: float = 2.0,
         coord_scale: float = 10.0,
-        mse_weight_min: float = 1.0,
-        mse_weight_peak: float = 50.0,
-        mse_weight_steepness: float = 3.0,
-        mse_weight_rise_center: float = 0.5,
-        mse_weight_fall_center: float = 5.0,
-        mse_hard_beta: float = 3.0,
-        mse_hard_p: float = 1.5,
         direction_mask_threshold: float = 0.5,
         direction_mask_upper: float = 5.0,
-        mse_hard_range_min: float = 1.0,
-        mse_hard_range_max: float = 5.0,
         disp_focus_min: float = 1.0,
         disp_focus_max: float = 5.0,
         disp_focus_weight: float = 1.5,
-        disp_outside_focus_weight: float = 0.9,
         flexible_threshold: float = 1.0,
         lambda_cos: float = 0.5,
         lambda_mag: float = 1.0,
         cos_warmup_epochs: int = 0,
         mag_warmup_epochs: int = 0,
-        hard_warmup_epochs: int = 0,
         focus_warmup_epochs: int = 0,
         plddt_gate_start: float = 90.0,
         plddt_gate_end: float = 100.0,
@@ -170,7 +159,6 @@ class EvoPointLitModule(pl.LightningModule):
 
         cos_warmup = _warmup_factor(int(self.hparams.cos_warmup_epochs))
         mag_warmup = _warmup_factor(int(self.hparams.mag_warmup_epochs))
-        hard_warmup = _warmup_factor(int(self.hparams.hard_warmup_epochs))
         focus_warmup = _warmup_factor(int(self.hparams.focus_warmup_epochs))
 
         if hasattr(batch, "plddt") and batch.plddt is not None:
@@ -189,29 +177,12 @@ class EvoPointLitModule(pl.LightningModule):
 
         target_norm = batch.y / self.coord_scale
         target_mag_real = torch.norm(batch.y, dim=-1)
-        rise = torch.sigmoid(
-            self.hparams.mse_weight_steepness * (target_mag_real - self.hparams.mse_weight_rise_center)
-        )
-        fall = 1.0 - torch.sigmoid(
-            self.hparams.mse_weight_steepness * (target_mag_real - self.hparams.mse_weight_fall_center)
-        )
-        w_min = self.hparams.mse_weight_min
-        w_peak = self.hparams.mse_weight_peak
-        mse_weights = w_min + w_peak * rise * fall
-
-        hard_min = self.hparams.mse_hard_range_min
-        hard_max = self.hparams.mse_hard_range_max
-        in_hard_range = (target_mag_real >= hard_min) & (target_mag_real <= hard_max)
-        hard_span = max(hard_max - hard_min, 1e-8)
-        t = (target_mag_real.clamp(hard_min, hard_max) - hard_min) / hard_span
-        w_hard = torch.ones_like(target_mag_real)
-        w_hard[in_hard_range] = 1.0 + self.hparams.mse_hard_beta * (t[in_hard_range] ** self.hparams.mse_hard_p)
-        mse_weights = mse_weights * (1.0 + hard_warmup * (w_hard - 1.0))
+        mse_weights = torch.ones_like(target_mag_real)
 
         focus_min = self.hparams.disp_focus_min
         focus_max = self.hparams.disp_focus_max
         in_focus = (target_mag_real >= focus_min) & (target_mag_real < focus_max)
-        focus_weights = torch.full_like(target_mag_real, self.hparams.disp_outside_focus_weight)
+        focus_weights = torch.ones_like(target_mag_real)
         focus_weights[in_focus] = self.hparams.disp_focus_weight
         mse_weights = mse_weights * (1.0 + focus_warmup * (focus_weights - 1.0))
 
@@ -265,7 +236,6 @@ class EvoPointLitModule(pl.LightningModule):
         self.log(f"{stage}/weights/lambda_mag_eff", lambda_mag_eff, batch_size=batch_size)
         self.log(f"{stage}/weights/cos_warmup", cos_warmup, batch_size=batch_size)
         self.log(f"{stage}/weights/mag_warmup", mag_warmup, batch_size=batch_size)
-        self.log(f"{stage}/weights/hard_warmup", hard_warmup, batch_size=batch_size)
         self.log(f"{stage}/weights/focus_warmup", focus_warmup, batch_size=batch_size)
         self.log(f"{stage}/loss_components/clash", loss_clash, batch_size=batch_size)
         self.log(f"{stage}/loss_components/high_plddt_l2", high_plddt_l2, batch_size=batch_size)
@@ -275,7 +245,6 @@ class EvoPointLitModule(pl.LightningModule):
         self.log(f"{stage}/weights/mean", mse_weights.mean(), batch_size=batch_size)
         self.log(f"{stage}/weights/std", mse_weights.std(unbiased=False), batch_size=batch_size)
         self.log(f"{stage}/weights/focus_frac", in_focus.float().mean(), batch_size=batch_size)
-        self.log(f"{stage}/weights/hard_frac", in_hard_range.float().mean(), batch_size=batch_size)
 
         gt_disp_mag = torch.norm(batch.y, dim=-1)
         self._log_disp_group_metrics(stage, delta_pred_real, batch.y, gt_disp_mag, batch_size)

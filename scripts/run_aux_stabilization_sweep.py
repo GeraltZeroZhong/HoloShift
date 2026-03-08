@@ -2,7 +2,7 @@
 """Run Phase-1 aux stabilization sweep (A0 + aux-only grid).
 
 This script follows the prioritized plan in docs/ablation_next_steps.md:
-- keep shaping/hard/focus/clash disabled (A0 scaffold)
+- keep focus/clash disabled (A0 scaffold)
 - sweep only lambda_cos and lambda_mag at conservative scales
 - optionally set aux warmup epochs for gradual activation
 
@@ -36,11 +36,7 @@ def main() -> None:
     lambda_mag_grid = [0.01, 0.05, 0.1]
 
     baseline_off = {
-        "model.mse_weight_peak": 1.0,
-        "model.mse_weight_min": 1.0,
-        "model.mse_hard_beta": 0.0,
         "model.disp_focus_weight": 1.0,
-        "model.disp_outside_focus_weight": 1.0,
         "model.lambda_clash": 0.0,
     }
 
@@ -55,7 +51,6 @@ def main() -> None:
             f"model.lambda_mag={lambda_mag}",
             f"model.cos_warmup_epochs={args.warmup_epochs}",
             f"model.mag_warmup_epochs={args.warmup_epochs}",
-            "model.hard_warmup_epochs=0",
             "model.focus_warmup_epochs=0",
         ]
         cmd.extend(f"{k}={v}" for k, v in baseline_off.items())
