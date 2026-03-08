@@ -87,3 +87,18 @@ python scripts/run_additive_ablation_all.py
 ```
 
 Use `--dry-run` to print all `train.py` commands without running, and `--extra-override` for shared Hydra overrides (for example, limiting epochs for quick sweeps).
+
+
+## Aux stabilization sweep (Phase-1 recommended follow-up)
+
+To run the aux-only stabilization grid on top of A0 (as suggested in `docs/ablation_next_steps.md`):
+
+```bash
+python scripts/run_aux_stabilization_sweep.py --seed 42
+```
+
+This sweeps:
+- `lambda_cos` in `[0.05, 0.1, 0.2]`
+- `lambda_mag` in `[0.01, 0.05, 0.1]`
+
+while keeping shaping/hard/focus/clash disabled, and uses aux warmup epochs by default (`--warmup-epochs 10`).
