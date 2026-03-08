@@ -1,6 +1,7 @@
 import argparse
 import csv
 import json
+import math
 import os
 import sys
 from typing import Dict, List
@@ -28,6 +29,7 @@ def parse_args():
     parser.add_argument("--bins", type=int, default=10, help="Number of equally spaced pLDDT bins in [0, 100].")
     parser.add_argument("--output_json", default="artifacts/pointwise_plddt_regression.json")
     parser.add_argument("--output_csv", default="artifacts/pointwise_plddt_samples.csv")
+    parser.add_argument("--output_plot", default="artifacts/pointwise_plddt_regression.png")
     return parser.parse_args()
 
 
@@ -134,6 +136,61 @@ def summarize_by_bins(plddt: torch.Tensor, values: torch.Tensor, bins: int) -> L
     return out
 
 
+def save_regression_plot(
+    plddt: torch.Tensor,
+    pred_err: torch.Tensor,
+    zero_err: torch.Tensor,
+    pred_fit: Dict[str, float],
+    zero_fit: Dict[str, float],
+    output_path: str,
+) -> bool:
+    try:
+        import matplotlib.pyplot as plt
+    except ModuleNotFoundError:
+        print("matplotlib is not installed; skipping regression plot generation.", file=sys.stderr)
+        return False
+
+    plt.figure(figsize=(10, 6))
+
+    plddt_np = plddt.cpu().numpy()
+    pred_err_np = pred_err.cpu().numpy()
+    zero_err_np = zero_err.cpu().numpy()
+
+    plt.scatter(plddt_np, pred_err_np, s=8, alpha=0.25, label="Predicted error", color="#1f77b4")
+    plt.scatter(plddt_np, zero_err_np, s=8, alpha=0.25, label="Zero-displacement error", color="#ff7f0e")
+
+    x_line = torch.linspace(0.0, 100.0, 200, dtype=torch.float64)
+    if not (math.isnan(pred_fit["slope"]) or math.isnan(pred_fit["intercept"])):
+        y_pred_line = pred_fit["slope"] * x_line + pred_fit["intercept"]
+        plt.plot(x_line.numpy(), y_pred_line.numpy(), color="#1f77b4", linewidth=2.0, label="Predicted regression")
+
+    if not (math.isnan(zero_fit["slope"]) or math.isnan(zero_fit["intercept"])):
+        y_zero_line = zero_fit["slope"] * x_line + zero_fit["intercept"]
+        plt.plot(
+            x_line.numpy(),
+            y_zero_line.numpy(),
+            color="#ff7f0e",
+            linewidth=2.0,
+            linestyle="--",
+            label="Zero-displacement regression",
+        )
+
+    plt.xlabel("pLDDT")
+    plt.ylabel("Per-residue Euclidean error")
+    plt.title("Point-wise pLDDT vs. coordinate error")
+    plt.xlim(0, 100)
+    plt.grid(alpha=0.2)
+    plt.legend()
+    plt.tight_layout()
+
+    plot_dir = os.path.dirname(output_path)
+    if plot_dir:
+        os.makedirs(plot_dir, exist_ok=True)
+    plt.savefig(output_path, dpi=200)
+    plt.close()
+    return True
+
+
 def main():
     args = parse_args()
 
@@ -222,8 +279,12 @@ def main():
         for p, pe, ze in zip(plddt.tolist(), pred_err.tolist(), zero_err.tolist()):
             writer.writerow([p, pe, ze])
 
+    plot_saved = save_regression_plot(plddt, pred_err, zero_err, pred_fit, zero_fit, args.output_plot)
+
     print(json.dumps(payload, indent=2, allow_nan=True))
     print(f"Saved pointwise samples to: {args.output_csv}")
+    if plot_saved:
+        print(f"Saved regression plot to: {args.output_plot}")
 
 
 if __name__ == "__main__":
