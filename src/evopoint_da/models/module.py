@@ -229,18 +229,18 @@ class EvoPointLitModule(pl.LightningModule):
             if plddt.dim() > 1:
                 plddt = plddt.squeeze(-1)
 
-            gate_start = self.hparams.plddt_gate_start
-            gate_end = max(self.hparams.plddt_gate_end, gate_start + 1e-6)
-            uncertainty_gate = ((gate_end - plddt) / (gate_end - gate_start)).clamp(0.0, 1.0)
-            delta_pred = delta_pred * uncertainty_gate.unsqueeze(-1)
+            low_plddt_threshold = self.hparams.plddt_gate_start
+            high_plddt_threshold = max(self.hparams.plddt_gate_end, low_plddt_threshold + 1e-6)
 
-            high_plddt_mask = plddt > gate_start
-            if high_plddt_mask.any():
-                high_plddt_l2 = (delta_pred[high_plddt_mask] ** 2).mean()
+            low_plddt_mask = plddt < low_plddt_threshold
+            mid_plddt_mask = (plddt >= low_plddt_threshold) & (plddt <= high_plddt_threshold)
+            high_plddt_mask = plddt > high_plddt_threshold
 
-            low_plddt_mask = plddt < gate_start
             if low_plddt_mask.any():
                 low_plddt_l2 = (delta_pred[low_plddt_mask] ** 2).mean()
+
+            if high_plddt_mask.any():
+                high_plddt_l2 = (delta_pred[high_plddt_mask] ** 2).mean()
 
         target_norm = batch.y / self.coord_scale
         target_mag_real = torch.norm(batch.y, dim=-1)
