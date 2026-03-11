@@ -56,7 +56,21 @@ def main(cfg: DictConfig):
 
     trainer = hydra.utils.instantiate(cfg.trainer, callbacks=callbacks, logger=logger, enable_checkpointing=True)
     trainer.fit(model=model, datamodule=datamodule)
-    trainer.test(model=model, datamodule=datamodule, ckpt_path="best")
+
+    best_flex_ckpt = callbacks[0].best_model_path
+    best_disp_1to5_ckpt = callbacks[1].best_model_path
+
+    if best_flex_ckpt:
+        print(f"Running test with best-flex checkpoint: {best_flex_ckpt}")
+        trainer.test(model=model, datamodule=datamodule, ckpt_path=best_flex_ckpt)
+    else:
+        print("Skipping best-flex checkpoint test: no best-flex checkpoint was saved.")
+
+    if best_disp_1to5_ckpt:
+        print(f"Running test with best-disp1to5 checkpoint: {best_disp_1to5_ckpt}")
+        trainer.test(model=model, datamodule=datamodule, ckpt_path=best_disp_1to5_ckpt)
+    else:
+        print("Skipping best-disp1to5 checkpoint test: no best-disp1to5 checkpoint was saved.")
 
 
 if __name__ == "__main__":
