@@ -78,7 +78,7 @@ class EvoPointDataset(InMemoryDataset):
         if not data_list:
             data_list = [
                 Data(
-                    x=torch.zeros((1, 130), dtype=torch.float32),
+                    x=torch.zeros((1, 144), dtype=torch.float32),
                     pos=torch.zeros((1, 3), dtype=torch.float32),
                     y=torch.zeros((1, 3), dtype=torch.float32),
                     edge_index=torch.zeros((2, 0), dtype=torch.long),

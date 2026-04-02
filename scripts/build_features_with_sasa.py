@@ -13,7 +13,7 @@ from evopoint_da.data.components import (
     ESMFeatureExtractor,
     PCAReducer,
     build_knn_edges,
-    compute_sasa_with_freesasa,
+    compute_structural_node_features,
     parse_pae_matrix,
 )
 
@@ -30,6 +30,8 @@ def get_args():
     p.add_argument("--pae_dir", default="data/raw_af2")
     p.add_argument("--af2_structure_dir", default="data/raw_af2")
     p.add_argument("--mapping_file", default="pdb_uniprot_mapping.json")
+    p.add_argument("--contact_radius", type=float, default=10.0)
+    p.add_argument("--surface_sasa_threshold", type=float, default=1.0)
     return p.parse_args()
 
 
@@ -89,13 +91,36 @@ def main():
             print(f"[debug] Skip {stem}: AF2 structure not found via mapping file")
             continue
 
-        sasa_map = compute_sasa_with_freesasa(af2_file)
-        sasa_raw = torch.tensor([sasa_map.get(rid, 0.0) for rid in d["residue_ids"]], dtype=torch.float32).unsqueeze(1)
-        sasa = (sasa_raw / SASA_SCALE_MAX).clamp(0.0, 1.0)
+        structural = compute_structural_node_features(
+            af2_file,
+            d["residue_ids"],
+            neighbor_radius=args.contact_radius,
+            surface_sasa_threshold=args.surface_sasa_threshold,
+        )
+        sasa = (structural["sasa"].float() / SASA_SCALE_MAX).clamp(0.0, 1.0)
+        rsa = structural["rsa"].float().clamp(0.0, 1.0)
+        residue_depth = (structural["residue_depth"].float() / 20.0).clamp(0.0, 1.0)
+        coordination_number = (structural["coordination_number"].float() / 32.0).clamp(0.0, 1.0)
+        hse = (structural["hse"].float() / 32.0).clamp(0.0, 1.0)
+        dihedral_sincos = structural["dihedral_sincos"].float()
+        dssp_3state = structural["dssp_3state"].float()
 
         plddt_raw = d["plddt"].float()
         plddt = (plddt_raw / PLDDT_SCALE_MAX).clamp(0.0, 1.0)
-        x = torch.cat([x_esm, plddt, sasa], dim=1)
+        x = torch.cat(
+            [
+                x_esm,
+                plddt,
+                sasa,
+                rsa,
+                residue_depth,
+                coordination_number,
+                hse,
+                dihedral_sincos,
+                dssp_3state,
+            ],
+            dim=1,
+        )
 
         pae_path_npy = os.path.join(args.pae_dir, f"{stem}.npy")
         pae_path_json = os.path.join(args.pae_dir, f"{stem}.json")
