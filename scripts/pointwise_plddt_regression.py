@@ -7,6 +7,7 @@ import sys
 from typing import Dict, List
 
 import torch
+from omegaconf import OmegaConf
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "../src"))
 from evopoint_da.data.datamodule import EvoPointDataModule
@@ -22,6 +23,7 @@ def parse_args():
     )
     parser.add_argument("--ckpt", required=True, help="Path to model checkpoint (.ckpt).")
     parser.add_argument("--data_dir", default="data/processed_graphs", help="Directory with processed graph .pt files.")
+    parser.add_argument("--data_cfg", default="configs/data/protein_displacement.yaml")
     parser.add_argument("--split", choices=["test", "calib", "val", "train"], default="test")
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--num_workers", type=int, default=0)
@@ -37,6 +39,9 @@ def parse_args():
     )
     parser.add_argument("--focus_plddt_min", type=float, default=50.0)
     parser.add_argument("--focus_plddt_max", type=float, default=80.0)
+    parser.add_argument("--calib_batch_size", type=int, default=None)
+    parser.add_argument("--split_seed", type=int, default=None)
+    parser.add_argument("--fallback_num_features", type=int, default=None)
     return parser.parse_args()
 
 
@@ -286,10 +291,17 @@ def main():
     if args.focus_plddt_min > args.focus_plddt_max:
         raise ValueError("focus_plddt_min cannot be greater than focus_plddt_max.")
 
+    cfg = OmegaConf.load(args.data_cfg) if os.path.exists(args.data_cfg) else OmegaConf.create({})
     dm = EvoPointDataModule(
         data_dir=args.data_dir,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
+        calib_batch_size=args.calib_batch_size if args.calib_batch_size is not None else cfg.get("calib_batch_size", 1),
+        split_seed=args.split_seed if args.split_seed is not None else cfg.get("split_seed", 42),
+        fallback_num_features=(
+            args.fallback_num_features if args.fallback_num_features is not None else cfg.get("fallback_num_features", 144)
+        ),
+        split_ranges=cfg.get("split_ranges", None),
     )
     dm.setup("fit" if args.split in {"train", "val", "calib"} else "test")
 

@@ -3,6 +3,23 @@ import torch
 import torch.nn.functional as F
 from .backbones.egnn import EGNNBackbone
 
+
+def _format_bin_value(value: float) -> str:
+    if float(value).is_integer():
+        return str(int(value))
+    return str(value).replace(".", "p")
+
+
+def _build_bin_ranges(edges: list[float], last_label: str = "gt") -> list[tuple[float, float | None, str]]:
+    if len(edges) < 2:
+        raise ValueError("Bin edges must include at least 2 values.")
+    ranges: list[tuple[float, float | None, str]] = []
+    for low, high in zip(edges[:-1], edges[1:]):
+        ranges.append((float(low), float(high), f"{_format_bin_value(low)}to{_format_bin_value(high)}"))
+    ranges.append((float(edges[-1]), None, f"{last_label}{_format_bin_value(edges[-1])}"))
+    return ranges
+
+
 class EvoPointLitModule(pl.LightningModule):
     def __init__(
         self,
@@ -33,10 +50,32 @@ class EvoPointLitModule(pl.LightningModule):
         lambda_low_plddt_l2: float = 0.5,
         lr_warmup_epochs: int = 10,
         inference_disp_multiplier: float = 2.0,
+        coord_init_gain: float = 0.001,
+        eps: float = 1e-8,
+        cosine_eps: float = 1e-6,
+        disp_group_edges: list[float] | None = None,
+        plddt_bin_edges: list[float] | None = None,
+        test_disp_bin_edges: list[float] | None = None,
+        test_batch_size: int = 1,
+        default_total_epochs: int = 100,
+        min_scheduler_epochs: int = 1,
+        lr_start_factor: float = 1e-8,
     ):
         super().__init__()
+        if disp_group_edges is None:
+            disp_group_edges = [0.0, 1.0, 5.0]
+        if plddt_bin_edges is None:
+            plddt_bin_edges = [0.0, 60.0, 70.0, 80.0, 90.0, 100.0]
+        if test_disp_bin_edges is None:
+            test_disp_bin_edges = [0.0, 0.5, 1.0, 2.0, 3.0, 4.0, 5.0]
         self.save_hyperparameters()
-        self.backbone = EGNNBackbone(in_channels=in_channels, hidden_dim=hidden_dim, num_layers=num_layers, edge_dim=edge_dim)
+        self.backbone = EGNNBackbone(
+            in_channels=in_channels,
+            hidden_dim=hidden_dim,
+            num_layers=num_layers,
+            edge_dim=edge_dim,
+            coord_init_gain=coord_init_gain,
+        )
         self.coord_scale = coord_scale
         self._test_disp_agg = {}
 
@@ -90,7 +129,12 @@ class EvoPointLitModule(pl.LightningModule):
             self.log(f"test/baseline_disp_{suffix}_rmsd", torch.sqrt(baseline_mse))
 
         # Aggregated displacement bin: [1.0, 5.0)
-        agg_suffixes = ["1to2", "2to3", "3to4", "4to5"]
+        agg_ranges = _build_bin_ranges(self.hparams.test_disp_bin_edges)
+        agg_suffixes = [
+            suffix
+            for low, high, suffix in agg_ranges
+            if high is not None and low >= self.hparams.disp_focus_min and high <= self.hparams.disp_focus_max
+        ]
         agg_sse_sum = None
         agg_baseline_sse_sum = None
         agg_n_elem = 0
@@ -110,7 +154,7 @@ class EvoPointLitModule(pl.LightningModule):
             baseline_disp_1to5_mse = agg_baseline_sse_sum / agg_n_elem
             self.log("test/disp_1to5_mse", disp_1to5_mse)
             self.log("test/baseline_disp_1to5_mse", baseline_disp_1to5_mse)
-            rel_improve = (baseline_disp_1to5_mse - disp_1to5_mse) / baseline_disp_1to5_mse.clamp_min(1e-8)
+            rel_improve = (baseline_disp_1to5_mse - disp_1to5_mse) / baseline_disp_1to5_mse.clamp_min(self.hparams.eps)
             self.log("test/summary/disp_1to5_rel_improve_vs_baseline", rel_improve)
 
     def forward(self, batch):
@@ -137,11 +181,7 @@ class EvoPointLitModule(pl.LightningModule):
         gt_disp_mag: torch.Tensor,
         batch_size: int | None,
     ):
-        groups = [
-            (0.0, 1.0, "0to1"),
-            (1.0, 5.0, "1to5"),
-            (5.0, None, "gt5"),
-        ]
+        groups = _build_bin_ranges(self.hparams.disp_group_edges)
         for low, high, suffix in groups:
             if high is None:
                 mask = gt_disp_mag >= low
@@ -167,9 +207,10 @@ class EvoPointLitModule(pl.LightningModule):
         batch_size: int | None,
     ):
         # pLDDT bins on raw pLDDT scale: [0,60), [60,70), [70,80), [80,90), [90,100]
-        plddt_ranges = [(0, 60), (60, 70), (70, 80), (80, 90), (90, 100)]
+        plddt_ranges = list(zip(self.hparams.plddt_bin_edges[:-1], self.hparams.plddt_bin_edges[1:]))
         for lower, upper in plddt_ranges:
-            if upper < 100:
+            max_edge = self.hparams.plddt_bin_edges[-1]
+            if upper < max_edge:
                 plddt_mask = (plddt >= float(lower)) & (plddt < float(upper))
             else:
                 plddt_mask = (plddt >= float(lower)) & (plddt <= float(upper))
@@ -230,7 +271,7 @@ class EvoPointLitModule(pl.LightningModule):
                 plddt = plddt.squeeze(-1)
 
             low_plddt_threshold = self.hparams.plddt_gate_start
-            high_plddt_threshold = max(self.hparams.plddt_gate_end, low_plddt_threshold + 1e-6)
+            high_plddt_threshold = max(self.hparams.plddt_gate_end, low_plddt_threshold + self.hparams.cosine_eps)
 
             low_plddt_mask = plddt < low_plddt_threshold
             mid_plddt_mask = (plddt >= low_plddt_threshold) & (plddt <= high_plddt_threshold)
@@ -255,8 +296,7 @@ class EvoPointLitModule(pl.LightningModule):
         focus_weights[over_max] = self.hparams.disp_over_max_weight
         mse_weights = mse_weights * (1.0 + focus_warmup * (focus_weights - 1.0))
 
-        eps = 1e-8
-        mse_weights = mse_weights / (mse_weights.mean().detach() + eps)
+        mse_weights = mse_weights / (mse_weights.mean().detach() + self.hparams.eps)
 
         loss_node_mse = F.smooth_l1_loss(delta_pred, target_norm, reduction='none').mean(dim=-1)
         loss_mse = (loss_node_mse * mse_weights).mean()
@@ -267,7 +307,12 @@ class EvoPointLitModule(pl.LightningModule):
         direction_mask = mask_focus
         
         if direction_mask.sum() > 0:
-            cos_sim = F.cosine_similarity(delta_pred[direction_mask], target_norm[direction_mask], dim=-1, eps=1e-6)
+            cos_sim = F.cosine_similarity(
+                delta_pred[direction_mask],
+                target_norm[direction_mask],
+                dim=-1,
+                eps=self.hparams.cosine_eps,
+            )
             loss_cos = (1.0 - cos_sim).mean()
         else:
             loss_cos = torch.tensor(0.0, device=self.device, dtype=delta_pred.dtype)
@@ -333,7 +378,7 @@ class EvoPointLitModule(pl.LightningModule):
                 batch_size=batch_size,
             )
         if stage == "val":
-            disp_1to5_mask = (gt_disp_mag >= 1.0) & (gt_disp_mag < 5.0)
+            disp_1to5_mask = (gt_disp_mag >= self.hparams.disp_focus_min) & (gt_disp_mag < self.hparams.disp_focus_max)
             if disp_1to5_mask.any():
                 disp_1to5_mse = F.mse_loss(delta_pred_real[disp_1to5_mask], batch.y[disp_1to5_mask])
                 self.log(
@@ -392,12 +437,12 @@ class EvoPointLitModule(pl.LightningModule):
         baseline_mse = F.mse_loss(baseline_delta, batch.y)
         self.log("test/baseline_mse", baseline_mse)
         self.log("test/baseline_mae", F.l1_loss(baseline_delta, batch.y))
-        overall_rel_improve = (baseline_mse - loss_mse_real) / baseline_mse.clamp_min(1e-8)
+        overall_rel_improve = (baseline_mse - loss_mse_real) / baseline_mse.clamp_min(self.hparams.eps)
         self.log("test/summary/overall_rel_improve_vs_baseline", overall_rel_improve)
         self.log("test/pred_magnitude", torch.norm(delta_pred_real, dim=-1).mean())
 
         gt_disp_mag = torch.norm(batch.y, dim=-1)
-        self._log_disp_group_metrics("test", delta_pred_real, batch.y, gt_disp_mag, batch_size=1)
+        self._log_disp_group_metrics("test", delta_pred_real, batch.y, gt_disp_mag, batch_size=self.hparams.test_batch_size)
         flexible_mask = gt_disp_mag > self.hparams.flexible_threshold
         if flexible_mask.any():
             flex_mse = F.mse_loss(delta_pred_real[flexible_mask], batch.y[flexible_mask])
@@ -408,15 +453,10 @@ class EvoPointLitModule(pl.LightningModule):
             self.log("test/baseline_flexible_rmsd", torch.sqrt(baseline_flex_mse))
 
         # Fine-grained displacement bins: [0,0.5), [0.5,1), [1,2), [2,3), [3,4), [4,5), [5,+inf)
-        disp_bins = [
-            (0.0, 0.5, "0to0p5"),
-            (0.5, 1.0, "0p5to1"),
-            (1.0, 2.0, "1to2"),
-            (2.0, 3.0, "2to3"),
-            (3.0, 4.0, "3to4"),
-            (4.0, 5.0, "4to5"),
-        ]
+        disp_bins = _build_bin_ranges(self.hparams.test_disp_bin_edges)
         for lower, upper, suffix in disp_bins:
+            if upper is None:
+                continue
             disp_mask = (gt_disp_mag >= lower) & (gt_disp_mag < upper)
             count = int(disp_mask.sum().item())
             self.log(
@@ -425,21 +465,23 @@ class EvoPointLitModule(pl.LightningModule):
                 on_step=False,
                 on_epoch=True,
                 reduce_fx=torch.sum,
-                batch_size=1,
+                batch_size=self.hparams.test_batch_size,
             )
             self._accumulate_disp_bin(suffix, sq_error, baseline_sq_error, disp_mask)
 
-        disp_mask_gt5 = gt_disp_mag >= 5.0
-        count_gt5 = int(disp_mask_gt5.sum().item())
+        gt_label = _build_bin_ranges(self.hparams.test_disp_bin_edges)[-1][2]
+        gt_threshold = float(self.hparams.test_disp_bin_edges[-1])
+        disp_mask_gt = gt_disp_mag >= gt_threshold
+        count_gt5 = int(disp_mask_gt.sum().item())
         self.log(
-            "test/disp_gt5_count",
+            f"test/disp_{gt_label}_count",
             torch.tensor(float(count_gt5), device=self.device),
             on_step=False,
             on_epoch=True,
             reduce_fx=torch.sum,
-            batch_size=1,
+            batch_size=self.hparams.test_batch_size,
         )
-        self._accumulate_disp_bin("gt5", sq_error, baseline_sq_error, disp_mask_gt5)
+        self._accumulate_disp_bin(gt_label, sq_error, baseline_sq_error, disp_mask_gt)
 
         # pLDDT-binned metrics
         if hasattr(batch, "plddt") and batch.plddt is not None:
@@ -452,7 +494,7 @@ class EvoPointLitModule(pl.LightningModule):
                 delta_pred_real=delta_pred_real,
                 y_true=batch.y,
                 baseline_delta=baseline_delta,
-                batch_size=1,
+                batch_size=self.hparams.test_batch_size,
             )
 
         return loss
@@ -461,18 +503,18 @@ class EvoPointLitModule(pl.LightningModule):
         optimizer = torch.optim.AdamW(self.parameters(), lr=self.hparams.lr, weight_decay=self.hparams.weight_decay)
 
         warmup_epochs = max(0, int(self.hparams.lr_warmup_epochs))
-        total_epochs = int(getattr(self.trainer, "max_epochs", 100))
+        total_epochs = int(getattr(self.trainer, "max_epochs", self.hparams.default_total_epochs))
         if total_epochs <= 0:
-            total_epochs = 100
+            total_epochs = self.hparams.default_total_epochs
 
         if warmup_epochs > 0:
             warmup = torch.optim.lr_scheduler.LinearLR(
                 optimizer,
-                start_factor=1e-8,
+                start_factor=self.hparams.lr_start_factor,
                 end_factor=1.0,
                 total_iters=warmup_epochs,
             )
-            cosine_epochs = max(1, total_epochs - warmup_epochs)
+            cosine_epochs = max(int(self.hparams.min_scheduler_epochs), total_epochs - warmup_epochs)
             cosine = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cosine_epochs)
             scheduler = torch.optim.lr_scheduler.SequentialLR(
                 optimizer,
@@ -480,6 +522,9 @@ class EvoPointLitModule(pl.LightningModule):
                 milestones=[warmup_epochs],
             )
         else:
-            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(1, total_epochs))
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer,
+                T_max=max(int(self.hparams.min_scheduler_epochs), total_epochs),
+            )
 
         return [optimizer], [scheduler]

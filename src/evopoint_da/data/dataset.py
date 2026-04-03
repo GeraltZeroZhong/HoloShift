@@ -8,7 +8,7 @@ from torch_geometric.data import Data, InMemoryDataset
 
 
 class EvoPointDataset(InMemoryDataset):
-    SPLITS = {
+    DEFAULT_SPLITS = {
         "train": (0.0, 0.7),
         "val": (0.7, 0.8),
         "calib": (0.8, 0.9),
@@ -16,10 +16,20 @@ class EvoPointDataset(InMemoryDataset):
         "all": (0.0, 1.0),
     }
 
-    def __init__(self, root: str, split: str = "train"):
-        if split not in self.SPLITS:
+    def __init__(
+        self,
+        root: str,
+        split: str = "train",
+        split_seed: int = 42,
+        split_ranges: dict | None = None,
+        fallback_num_features: int = 144,
+    ):
+        self.split_ranges = split_ranges or self.DEFAULT_SPLITS
+        if split not in self.split_ranges:
             raise ValueError(f"Unknown split: {split}")
         self.split = split
+        self.split_seed = split_seed
+        self.fallback_num_features = fallback_num_features
         super().__init__(root)
         if not os.path.exists(self.processed_paths[0]):
             self.process()
@@ -31,10 +41,10 @@ class EvoPointDataset(InMemoryDataset):
 
     def process(self):
         raw_files = sorted(glob.glob(os.path.join(self.root, "*.pt")))
-        random.seed(42)
+        random.seed(self.split_seed)
         random.shuffle(raw_files)
 
-        lo, hi = self.SPLITS[self.split]
+        lo, hi = self.split_ranges[self.split]
         n = len(raw_files)
         files = raw_files[int(n * lo): int(n * hi)]
 
@@ -78,7 +88,7 @@ class EvoPointDataset(InMemoryDataset):
         if not data_list:
             data_list = [
                 Data(
-                    x=torch.zeros((1, 144), dtype=torch.float32),
+                    x=torch.zeros((1, self.fallback_num_features), dtype=torch.float32),
                     pos=torch.zeros((1, 3), dtype=torch.float32),
                     y=torch.zeros((1, 3), dtype=torch.float32),
                     edge_index=torch.zeros((2, 0), dtype=torch.long),

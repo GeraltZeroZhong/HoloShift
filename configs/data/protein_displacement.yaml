@@ -2,3 +2,12 @@ _target_: evopoint_da.data.datamodule.EvoPointDataModule
 data_dir: ${paths.data_dir}/processed_graphs
 batch_size: 4
 num_workers: 0
+calib_batch_size: 1
+split_seed: 42
+fallback_num_features: 144
+split_ranges:
+  train: [0.0, 0.7]
+  val: [0.7, 0.8]
+  calib: [0.8, 0.9]
+  test: [0.9, 1.0]
+  all: [0.0, 1.0]

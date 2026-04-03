@@ -26,3 +26,13 @@ plddt_gate_end: 80.0
 lambda_high_plddt_l2: 1.25
 lambda_low_plddt_l2: 0.5
 inference_disp_multiplier: 2.0
+coord_init_gain: 0.001
+eps: 1e-8
+cosine_eps: 1e-6
+test_batch_size: 1
+default_total_epochs: 100
+min_scheduler_epochs: 1
+lr_start_factor: 1e-8
+disp_group_edges: [0.0, 1.0, 5.0]
+plddt_bin_edges: [0.0, 60.0, 70.0, 80.0, 90.0, 100.0]
+test_disp_bin_edges: [0.0, 0.5, 1.0, 2.0, 3.0, 4.0, 5.0]
