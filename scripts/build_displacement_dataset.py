@@ -2,10 +2,12 @@ import argparse
 import glob
 import json
 import os
+import sys
 
 import numpy as np
 import torch
 
+sys.path.append(os.path.join(os.path.dirname(__file__), "../src"))
 from evopoint_da.data.components import StructureParser, compute_displacement_target
 
 

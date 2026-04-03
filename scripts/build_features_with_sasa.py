@@ -2,6 +2,7 @@ import argparse
 import glob
 import json
 import os
+import sys
 import torch
 from tqdm import tqdm
 
@@ -9,6 +10,7 @@ from tqdm import tqdm
 PLDDT_SCALE_MAX = 100.0
 SASA_SCALE_MAX = 250.0
 
+sys.path.append(os.path.join(os.path.dirname(__file__), "../src"))
 from evopoint_da.data.components import (
     ESMFeatureExtractor,
     PCAReducer,

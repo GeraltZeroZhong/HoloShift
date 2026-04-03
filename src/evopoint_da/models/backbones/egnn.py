@@ -2,7 +2,13 @@ import torch
 import torch.nn as nn
 
 class EGNNLayer(nn.Module):
-    def __init__(self, feat_dim: int, edge_dim: int = 2, hidden_dim: int = 128):
+    def __init__(
+        self,
+        feat_dim: int,
+        edge_dim: int = 2,
+        hidden_dim: int = 128,
+        coord_init_gain: float = 0.001,
+    ):
         super().__init__()
         self.edge_mlp = nn.Sequential(
             nn.Linear(feat_dim * 2 + edge_dim + 1, hidden_dim),
@@ -26,7 +32,7 @@ class EGNNLayer(nn.Module):
         
         # === 核心修改: 必须给一个非零的初始扰动 ===
         # gain=0.001 既保证了初始位移很小（不破坏结构），又保证了梯度存在
-        nn.init.xavier_uniform_(self.coord_mlp[-1].weight, gain=0.001)
+        nn.init.xavier_uniform_(self.coord_mlp[-1].weight, gain=coord_init_gain)
         nn.init.zeros_(self.coord_mlp[-1].bias)
         # =========================================
 
@@ -48,10 +54,27 @@ class EGNNLayer(nn.Module):
         return x, pos
 
 class EGNNBackbone(nn.Module):
-    def __init__(self, in_channels: int, hidden_dim: int = 128, num_layers: int = 4, edge_dim: int = 2):
+    def __init__(
+        self,
+        in_channels: int,
+        hidden_dim: int = 128,
+        num_layers: int = 4,
+        edge_dim: int = 2,
+        coord_init_gain: float = 0.001,
+    ):
         super().__init__()
         self.input_proj = nn.Linear(in_channels, hidden_dim)
-        self.layers = nn.ModuleList([EGNNLayer(hidden_dim, edge_dim=edge_dim, hidden_dim=hidden_dim) for _ in range(num_layers)])
+        self.layers = nn.ModuleList(
+            [
+                EGNNLayer(
+                    hidden_dim,
+                    edge_dim=edge_dim,
+                    hidden_dim=hidden_dim,
+                    coord_init_gain=coord_init_gain,
+                )
+                for _ in range(num_layers)
+            ]
+        )
 
     def forward(self, x, pos, edge_index, edge_attr):
         x = self.input_proj(x)
