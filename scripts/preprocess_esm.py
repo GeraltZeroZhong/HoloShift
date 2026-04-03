@@ -25,9 +25,11 @@ def get_args():
 
 
 def load_structure(struct_parser: StructureParser, path: str):
-    parsed = struct_parser.parse_ca_structure(path)
-    if not parsed:
+    chains = struct_parser.parse_ca_structure(path)
+    if not chains:
         return None
+    # Keep preprocessing deterministic: always use the longest valid chain.
+    parsed = chains[max(chains.keys(), key=lambda cid: len(chains[cid]["coords"]))]
     max_len = 1022
     if len(parsed["sequence"]) > max_len:
         parsed["sequence"] = parsed["sequence"][:max_len]
